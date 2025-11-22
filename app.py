@@ -1,143 +1,109 @@
-import requests
-import json
-import datetime
-from typing import Dict, Any
+import streamlit as st
+import os
+from dotenv import load_dotenv
+from src.utils.database import init_db, create_session, get_sessions, save_message, get_chat_history
+from src.clients.hevy_client import HevyClient
+from src.clients.fitbit_client import FitbitClient
+from src.graph.agent import fitness_agent
+from langchain_core.messages import HumanMessage, AIMessage
 
-# --- CONFIGURATION ---
-# You would typically load these from environment variables for security
-HEVY_API_KEY = "YOUR_HEVY_API_KEY"
-FITBIT_CLIENT_ID = "YOUR_FITBIT_CLIENT_ID"
-FITBIT_CLIENT_SECRET = "YOUR_FITBIT_CLIENT_SECRET"
+# Load Environment
+load_dotenv()
 
-# OpenAI or Anthropic API Key
-LLM_API_KEY = "YOUR_LLM_API_KEY" 
+# Initialize DB
+init_db()
 
-# --- HEVY API CLIENT ---
-class HevyClient:
-    def __init__(self, api_key):
-        self.base_url = "https://api.hevyapp.com/v1"
-        self.headers = {
-            "api-key": api_key,
-            "Content-Type": "application/json"
-        }
+# Page Config
+st.set_page_config(page_title="Fitness Bridge AI", page_icon="💪", layout="wide")
 
-    def get_routines(self, page=1, page_size=10):
-        """Fetches your workout routines."""
-        url = f"{self.base_url}/routines"
-        params = {"page": page, "pageSize": page_size}
-        response = requests.get(url, headers=self.headers, params=params)
-        return response.json()
-
-    def update_routine(self, routine_id, payload):
-        """Updates a specific routine with new exercises/sets/reps."""
-        url = f"{self.base_url}/routines/{routine_id}"
-        response = requests.put(url, headers=self.headers, json=payload)
-        if response.status_code == 200:
-            print(f"✅ Successfully updated routine: {routine_id}")
-        else:
-            print(f"❌ Error updating routine: {response.text}")
-
-# --- FITBIT API CLIENT (Simplified) ---
-# Note: Real implementation requires OAuth2 token exchange flow using 'fitbit' library.
-# This class assumes you have an access_token for demonstration.
-class FitbitClient:
-    def __init__(self, access_token):
-        self.base_url = "https://api.fitbit.com/1"
-        self.headers = {"Authorization": f"Bearer {access_token}"}
-
-    def get_sleep_data(self, date_str):
-        """Fetches sleep data for a specific date (YYYY-MM-DD)."""
-        url = f"{self.base_url}/user/-/sleep/date/{date_str}.json"
-        response = requests.get(url, headers=self.headers)
-        return response.json()
-
-    def get_readiness(self):
-        """Fetches Daily Readiness Score (Requires Fitbit Premium usually)."""
-        # Fallback: Calculate a simple score based on sleep minutes
-        # In a real app, you'd fetch the actual /1/user/-/scores/readiness.json
-        return {"score": 75, "status": "Good"} 
-
-# --- LLM INTEGRATION (Mock) ---
-def ask_llm_to_optimize(routine_json, health_metrics):
-    """
-    Sends the routine and health data to an LLM to get an optimized version.
-    In production, use openai.ChatCompletion.create() or anthropic.messages.create()
-    """
+# --- SIDEBAR ---
+with st.sidebar:
+    st.header("🔌 Connections")
     
-    prompt = f"""
-    You are an expert strength and conditioning coach.
-    
-    CONTEXT:
-    My current physical state is: {json.dumps(health_metrics)}
-    My planned workout routine is: {json.dumps(routine_json)}
-    
-    INSTRUCTION:
-    - If my sleep/recovery is poor (sleep < 6 hours or readiness < 60), reduce the total volume (sets) by 30% and increase rep range to lower intensity.
-    - If my recovery is great, keep the routine as is or suggest a 5% weight increase.
-    - Output ONLY the JSON for the updated routine structure required by Hevy API.
-    """
-    
-    print("\n--- PROMPT SENT TO LLM ---")
-    print(prompt[:300] + "...") # Print partial prompt for debug
-    
-    # SIMULATED RESPONSE FROM LLM (Example: It detected poor sleep)
-    # It reduces sets from 4 to 3 and changes reps from 5 to 8
-    updated_routine_mock = routine_json.copy()
-    updated_routine_mock['notes'] = "⚠️ AI Adjusted: Volume reduced due to poor sleep (5.5 hrs)."
-    
-    # Simulating a change in the first exercise of the routine
-    if 'exercises' in updated_routine_mock and len(updated_routine_mock['exercises']) > 0:
-        first_exercise = updated_routine_mock['exercises'][0]
-        # Modify sets (mock logic)
-        if len(first_exercise.get('sets', [])) > 2:
-             first_exercise['sets'].pop() # Remove one set
-             
-    return updated_routine_mock
+    # Check Hevy
+    hevy_key = os.getenv("HEVY_API_KEY")
+    if hevy_key and HevyClient(hevy_key).check_connection():
+        st.success("Hevy Connected")
+    else:
+        st.error("Hevy Disconnected")
+        
+    # Check Fitbit
+    fitbit_token = os.getenv("FITBIT_ACCESS_TOKEN")
+    if fitbit_token and FitbitClient(fitbit_token).get_profile():
+        st.success("Fitbit Connected")
+    else:
+        st.warning("Fitbit Token Invalid/Expired")
 
-# --- MAIN WORKFLOW ---
-def main():
-    # 1. Initialize Clients
-    hevy = HevyClient(HEVY_API_KEY)
-    # fitbit = FitbitClient(ACCESS_TOKEN) # Requires OAuth token setup
+    st.divider()
     
-    # 2. Get Biological Context (Mocking data for script runnable)
-    print("📡 Fetching Fitbit Data...")
-    today = datetime.date.today().strftime("%Y-%m-%d")
-    # sleep_data = fitbit.get_sleep_data(today)
-    health_context = {
-        "date": today,
-        "sleep_hours": 5.5,
-        "sleep_efficiency": 78, # Low efficiency
-        "resting_heart_rate": 65 # Slightly elevated
-    }
-    print(f"   Body Status: {health_context}")
-
-    # 3. Get Target Routine from Hevy
-    print("🏋️ Fetching Hevy Routines...")
-    routines_data = hevy.get_routines()
+    st.header("🗄️ History")
+    # Session Management
+    sessions = get_sessions()
+    session_options = {s[0]: s[1] for s in sessions}
     
-    if not routines_data.get('routines'):
-        print("   No routines found. Create one in Hevy first.")
-        return
+    if st.button("➕ New Chat"):
+        new_id = create_session()
+        st.session_state.active_session = new_id
+        st.rerun()
+        
+    selected_session_id = st.selectbox(
+        "Past Conversations", 
+        options=list(session_options.keys()), 
+        format_func=lambda x: session_options[x],
+        index=0 if sessions else None
+    )
+    
+    if selected_session_id:
+        st.session_state.active_session = selected_session_id
 
-    # Let's assume we want to do the first routine found
-    target_routine = routines_data['routines'][0]
-    print(f"   Target Routine: {target_routine['title']}")
+# --- MAIN CHAT INTERFACE ---
+st.title("🏋️ Fitness Bridge AI")
 
-    # 4. Optimize with LLM
-    print("🧠 AI Optimizing...")
-    new_routine_payload = ask_llm_to_optimize(target_routine, health_context)
+if "active_session" not in st.session_state:
+    # Create default session if none exists
+    st.session_state.active_session = create_session()
 
-    # 5. Update Hevy (Optional: ask user for confirmation first)
-    confirm = input(f"   AI suggests modifying '{target_routine['title']}' (See notes). Update? (y/n): ")
-    if confirm.lower() == 'y':
-        # Note: Hevy API requires specific payload structure for PUT. 
-        # You generally send the 'exercises' array.
-        update_payload = {
-            "exercises": new_routine_payload.get('exercises', []),
-            "notes": new_routine_payload.get('notes', "")
-        }
-        hevy.update_routine(target_routine['id'], update_payload)
+# Load Chat History from DB
+history = get_chat_history(st.session_state.active_session)
 
-if __name__ == "__main__":
-    main()
+# Display Messages
+for msg in history:
+    with st.chat_message(msg["role"]):
+        st.markdown(msg["content"])
+
+# Chat Input
+if prompt := st.chat_input("Ask about your workouts, recovery, or routine updates..."):
+    # 1. Display User Message
+    with st.chat_message("user"):
+        st.markdown(prompt)
+    
+    # 2. Save to DB
+    save_message(st.session_state.active_session, "user", prompt)
+    
+    # 3. LangGraph Processing
+    with st.chat_message("assistant"):
+        message_placeholder = st.empty()
+        message_placeholder.text("Thinking...")
+        
+        # Construct LangChain message history for the graph
+        # We reload full history from DB to ensure context window is accurate
+        lc_messages = []
+        for h in history:
+            if h["role"] == "user":
+                lc_messages.append(HumanMessage(content=h["content"]))
+            else:
+                lc_messages.append(AIMessage(content=h["content"]))
+        lc_messages.append(HumanMessage(content=prompt))
+        
+        # Invoke Agent
+        try:
+            response = fitness_agent.invoke({"messages": lc_messages, "user_id": "user"})
+            ai_response = response["messages"][-1].content
+            
+            message_placeholder.markdown(ai_response)
+            
+            # 4. Save AI Response to DB
+            save_message(st.session_state.active_session, "assistant", ai_response)
+            
+        except Exception as e:
+            message_placeholder.error(f"Error: {str(e)}")
