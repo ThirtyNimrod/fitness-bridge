@@ -3,6 +3,7 @@ import requests
 from tenacity import retry, wait_exponential, stop_after_attempt
 from src.utils.cache import cached
 from src.utils.logger import app_logger
+from src.utils.token_writer import write_token_to_env
 
 from config import (
     STRAVA_CLIENT_ID,
@@ -32,6 +33,7 @@ class StravaClient:
             data = res.json()
             self.access_token = data.get("access_token")
             app_logger.info("Strava token refresh successful")
+            write_token_to_env("STRAVA_ACCESS_TOKEN", self.access_token)
         else:
             app_logger.error(f"Strava token refresh failed: {res.text}")
             raise AuthError(f"Strava token refresh failed: {res.text}")

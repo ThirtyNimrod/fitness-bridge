@@ -20,8 +20,7 @@ def format_set(s):
 def render_dashboard():
     st.header("Your Training Overview")
 
-    with st.spinner("Fetching training dataset..."):
-        df = build_dataset(n_days=28)
+    df = build_dataset(n_days=28)
 
     if df.empty:
         st.info("No workout data found. Connect your Strava account and ensure you have recent activities.")

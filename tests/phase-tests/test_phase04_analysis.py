@@ -1,6 +1,11 @@
 """
-Test Suite: Phase 4 - Analysis Algorithms
-Tests: readiness scoring, load computation, ACWR, progressive overload detection.
+Test Suite: Phase 04 - Analysis Algorithms
+Coverage:
+- Verifies the readiness algorithm outputs correct bounds and handles empty data gracefully.
+- Checks scoring accuracy for Sleep, HRV, and Resting Heart Rate deviations.
+- Validates the 7-day Weekly Load aggregation logic from the SQLite cache.
+- Tests Acute:Chronic Workload Ratio (ACWR) safety limits and overreach flags.
+- Confirms progressive overload trend recognition (progressing vs maintaining).
 """
 
 import os

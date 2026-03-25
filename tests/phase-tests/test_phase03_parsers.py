@@ -1,6 +1,10 @@
 """
-Test Suite: Phase 3 - Hevy Parser
-Tests: set line parsing, volume calculation, muscle group tagging, full description parsing.
+Test Suite: Phase 03 - Parsers (Hevy Integration)
+Coverage:
+- Tests extracting individual components from heavy lifting strings (reps, weight, RPE/tags).
+- Validates the calculation algorithm for isolating set volume (e.g. 100kg x 5 = 500kg volume).
+- Ensures different categories of strength training strings accurately map to major muscle groups (chest, back, legs).
+- Tests parsing of large, multi-exercise workout descriptions directly from Hevy synchronizations.
 """
 
 import os

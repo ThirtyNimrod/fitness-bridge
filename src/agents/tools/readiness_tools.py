@@ -1,27 +1,28 @@
 from langchain_core.tools import tool
 from datetime import date, timedelta
 import json
-from src.clients.fitbit_client import FitbitClient
-from src.analysis.readiness import compute_readiness
+from src.utils.database import get_workouts, get_workout_by_date
 
 @tool
 def get_todays_readiness():
     """
-    Fetches today's readiness score computed from Fitbit sleep,
+    Fetches today's readiness score computed from sleep,
     HRV, and resting heart rate data. Returns score 0-100,
     label, component breakdown, and a recommendation.
     """
     today = date.today().isoformat()
-    try:
-        fitbit = FitbitClient()
-        sleep_data = fitbit.get_sleep(today)
-        hrv_data   = fitbit.get_hrv(today)
-        resting_hr = fitbit.get_resting_hr(today)
-    except Exception as e:
-        return json.dumps({"error": f"Failed to fetch data: {str(e)}"})
-
-    result = compute_readiness(sleep_data, hrv_data, resting_hr)
-    return json.dumps(result)
+    session = get_workout_by_date(today)
+    
+    if not session:
+        return json.dumps({"error": "No data synced for today yet."})
+        
+    return json.dumps({
+        "score": session.get("readiness_score"),
+        "label": session.get("readiness_label"),
+        "sleep_hours": session.get("sleep_hours"),
+        "hrv_ms": session.get("hrv_ms"),
+        "resting_hr": session.get("resting_hr"),
+    })
 
 @tool
 def get_readiness_trend(days: int = 7):
@@ -29,23 +30,20 @@ def get_readiness_trend(days: int = 7):
     Returns readiness scores for the last N days.
     Useful for identifying a recovery pattern over time.
     """
-    try:
-        fitbit = FitbitClient()
-    except Exception as e:
-        return json.dumps({"error": f"Failed to fetch data: {str(e)}"})
+    workouts = get_workouts(n_days=days)
+    if not workouts:
+        return json.dumps({"error": "No data available."})
         
     trend = []
-    for i in range(days):
-        date_str = (date.today() - timedelta(days=i)).isoformat()
-        try:
-            sleep = fitbit.get_sleep(date_str)
-            hrv   = fitbit.get_hrv(date_str)
-            rhr   = fitbit.get_resting_hr(date_str)
-            readiness = compute_readiness(sleep, hrv, rhr)
-            trend.append({"date": date_str, "score": readiness["score"], "label": readiness["label"]})
-        except Exception:
-            continue
+    # get_workouts returns newest first, we want oldest first for a trend
+    for w in reversed(workouts):
+        if w.get("readiness_score") is not None:
+            trend.append({
+                "date": w["date"], 
+                "score": w["readiness_score"], 
+                "label": w["readiness_label"]
+            })
 
-    return json.dumps(list(reversed(trend)))
+    return json.dumps(trend)
 
 readiness_tools = [get_todays_readiness, get_readiness_trend]

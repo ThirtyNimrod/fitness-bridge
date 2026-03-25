@@ -1,6 +1,10 @@
 """
-Test Suite: Phase 1 - Foundation
-Tests: config loading, diskcache singleton, SQLite CRUD operations.
+Test Suite: Phase 01 - Foundation & Local Storage
+Coverage: 
+- Validates core configurations (DB_PATH, CACHE_DIR, variables) are loaded correctly.
+- Tests SQLite database initialization and local persistence (sessions, chat history, semantic facts).
+- Validates that the DiskCache singleton mechanism properly caches intensive function calls.
+These tests verify that the project can accurately read, write, and memorize its own functional states.
 """
 
 import os

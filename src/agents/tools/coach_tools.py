@@ -1,10 +1,9 @@
 from langchain_core.tools import tool
 from datetime import date
 import json
-from src.clients.fitbit_client import FitbitClient
-from src.analysis.readiness import compute_readiness
 from src.analysis.load import compute_weekly_load, compute_acwr, detect_overreach
 from src.analysis.dataset import build_dataset
+from src.utils.database import get_workout_by_date
 
 @tool
 def get_full_context():
@@ -13,18 +12,23 @@ def get_full_context():
     training load. Use this for holistic coaching recommendations.
     """
     today = date.today().isoformat()
-    try:
-        fitbit = FitbitClient()
-        sleep = fitbit.get_sleep(today)
-        hrv = fitbit.get_hrv(today)
-        rhr = fitbit.get_resting_hr(today)
-        readiness = compute_readiness(sleep, hrv, rhr)
-    except Exception as e:
-        readiness = {"error": str(e)}
+    session = get_workout_by_date(today)
+    
+    if session:
+        readiness = {
+            "score": session.get("readiness_score"),
+            "label": session.get("readiness_label"),
+            "sleep_hours": session.get("sleep_hours"),
+            "hrv_ms": session.get("hrv_ms"),
+            "resting_hr": session.get("resting_hr"),
+        }
+    else:
+        readiness = {"error": "No readiness data synced for today."}
 
     df = build_dataset(n_days=35)
-    weekly = compute_weekly_load(df)
-    acwr = compute_acwr(df)
+    weekly = compute_weekly_load(df) if not df.empty else {"total_volume_kg": 0}
+    acwr = compute_acwr(df) if not df.empty else None
+    
     if df.empty:
         overreach, overreach_msg = False, "No data"
     else:
@@ -39,3 +43,4 @@ def get_full_context():
     })
 
 coach_tools = [get_full_context]
+

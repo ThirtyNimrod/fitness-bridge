@@ -1,6 +1,10 @@
 """
-Test Suite: Phase 5 - Memory Manager & Guardrails
-Tests: ShortTermStore, SemanticStore, InputGuardrail, OutputGuardrail.
+Test Suite: Phase 06 - Memory Manager & Guardrails
+Coverage:
+- Tests saving and retrieving sequential text interactions via ShortTermStore.
+- Tests semantic extraction (upsert/delete) to long-term memory via SemanticStore.
+- Validates InputGuardrail prevents prompt injections, off-topic requests, or malicious commands.
+- Checks OutputGuardrail safely filters hallucinated numbers from LLM responses compared against strictly verified tool data.
 """
 
 import os

@@ -3,6 +3,7 @@ import requests
 from tenacity import retry, wait_exponential, stop_after_attempt
 from src.utils.cache import cached
 from src.utils.logger import app_logger
+from src.utils.token_writer import write_token_to_env
 
 from config import (
     FITBIT_CLIENT_ID,
@@ -38,8 +39,12 @@ class FitbitClient:
         res = requests.post(url, headers=headers, data=data)
         if res.status_code == 200:
             json_data = res.json()
-            self.access_token = json_data.get("access_token")
+            self.access_token  = json_data.get("access_token")
+            new_refresh        = json_data.get("refresh_token")
             app_logger.info("Fitbit token refresh successful")
+            write_token_to_env("FITBIT_ACCESS_TOKEN",  self.access_token)
+            if new_refresh:
+                write_token_to_env("FITBIT_REFRESH_TOKEN", new_refresh)
         else:
             app_logger.error(f"Fitbit token refresh failed: {res.text}")
             raise AuthError(f"Fitbit token refresh failed: {res.text}")

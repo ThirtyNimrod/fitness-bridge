@@ -1,6 +1,10 @@
 """
-Test Suite: Phase 6 - Agent Layer
-Tests: graph compilation, router node, state structure, tool execution shape.
+Test Suite: Phase 07 - Agent Layer
+Coverage:
+- Tests successful compilation of the LangGraph AI routing core.
+- Verifies that the AgentState structure dictates the expected schema (intent, session_id, tool_data).
+- Confirms the correct categories and signatures are bound to the intent router (readiness, progress, coach).
+- Asserts that all downstream data fetch tools contain valid Langchain schemas and proper LLM descriptions.
 """
 
 import os

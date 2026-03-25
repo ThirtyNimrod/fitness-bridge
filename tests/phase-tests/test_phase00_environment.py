@@ -1,7 +1,10 @@
 """
-Test Suite: Environment Setup Validation
-Validates that all required packages are installed and the .env file
-contains the necessary configuration keys. Run this FIRST.
+Test Suite: Phase 00 - Environment & Dependencies
+Coverage: 
+- Asserts that all required 3rd-party pip packages (streamlit, langchain, pandas, etc.) are installed.
+- Validates the existence and population of the `.env` file containing critical Strava and Fitbit API keys.
+- Checks that all essential project source files (src/ and ui/ directories) exist before continuing with downstream tests.
+Run this phase first to confirm the foundation is solid.
 """
 
 import sys
@@ -9,7 +12,7 @@ import os
 import importlib
 import pytest
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, BASE_DIR)
 
 REQUIRED_PACKAGES = [
