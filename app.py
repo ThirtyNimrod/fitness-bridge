@@ -1,109 +1,78 @@
 import streamlit as st
 import os
+import sys
 from dotenv import load_dotenv
-from src.utils.database import init_db, create_session, get_sessions, save_message, get_chat_history
-from src.clients.hevy_client import HevyClient
-from src.clients.fitbit_client import FitbitClient
-from src.graph.agent import fitness_agent
-from langchain_core.messages import HumanMessage, AIMessage
 
-# Load Environment
+base_dir = os.path.dirname(os.path.abspath(__file__))
+if os.getcwd() != base_dir:
+    os.chdir(base_dir)
+sys.path.insert(0, base_dir)
+
 load_dotenv()
 
-# Initialize DB
+from src.utils.database import init_db, create_session, get_sessions
+from src.clients.strava_client import StravaClient
+from src.clients.fitbit_client import FitbitClient
+from ui.dashboard import render_dashboard
+from ui.chat import render_chat
+
 init_db()
 
-# Page Config
-st.set_page_config(page_title="Fitness Bridge AI", page_icon="💪", layout="wide")
+st.set_page_config(title="Fitness Bridge AI", layout="wide", page_icon="🏋️")
 
-# --- SIDEBAR ---
+# Sidebar
 with st.sidebar:
-    st.header("🔌 Connections")
+    st.header("Connections")
     
-    # Check Hevy
-    hevy_key = os.getenv("HEVY_API_KEY")
-    if hevy_key and HevyClient(hevy_key).check_connection():
-        st.success("Hevy Connected")
-    else:
-        st.error("Hevy Disconnected")
+    try:
+        strava = StravaClient()
+        if strava.check_connection():
+            st.success("✅ Strava Connected")
+        else:
+            st.error("❌ Strava Not Connected")
+    except Exception as e:
+        st.error(f"❌ Strava Error: {str(e)[:50]}")
         
-    # Check Fitbit
-    fitbit_token = os.getenv("FITBIT_ACCESS_TOKEN")
-    if fitbit_token and FitbitClient(fitbit_token).get_profile():
-        st.success("Fitbit Connected")
-    else:
-        st.warning("Fitbit Token Invalid/Expired")
+    try:
+        fitbit = FitbitClient()
+        if fitbit.check_connection():
+            st.success("✅ Fitbit Connected")
+        else:
+            st.error("❌ Fitbit Not Connected")
+    except Exception as e:
+        st.error(f"❌ Fitbit Error: {str(e)[:50]}")
 
     st.divider()
-    
-    st.header("🗄️ History")
-    # Session Management
-    sessions = get_sessions()
-    session_options = {s[0]: s[1] for s in sessions}
-    
-    if st.button("➕ New Chat"):
-        new_id = create_session()
-        st.session_state.active_session = new_id
+
+    st.header("Sessions")
+    if st.button("+ New Chat", use_container_width=True):
+        st.session_state.session_id = create_session("New Session")
         st.rerun()
-        
-    selected_session_id = st.selectbox(
-        "Past Conversations", 
-        options=list(session_options.keys()), 
-        format_func=lambda x: session_options[x],
-        index=0 if sessions else None
-    )
-    
-    if selected_session_id:
-        st.session_state.active_session = selected_session_id
 
-# --- MAIN CHAT INTERFACE ---
-st.title("🏋️ Fitness Bridge AI")
+    sessions = get_sessions()
+    if sessions:
+        # Create a lookup dictionary
+        session_dict = {s["id"]: s["title"] for s in sessions}
+        selected_id = st.selectbox(
+            "Past chats", 
+            options=list(session_dict.keys()), 
+            format_func=lambda x: session_dict[x],
+            index=0 if "session_id" not in st.session_state else list(session_dict.keys()).index(st.session_state.session_id) if st.session_state.session_id in session_dict else 0
+        )
+        st.session_state.session_id = selected_id
+    else:
+        st.write("No prior chats.")
+        if "session_id" not in st.session_state:
+            st.session_state.session_id = create_session("Initial Session")
 
-if "active_session" not in st.session_state:
-    # Create default session if none exists
-    st.session_state.active_session = create_session()
+# Main Area
+tab_dash, tab_chat = st.tabs(["📊 Dashboard", "💬 AI Coach"])
 
-# Load Chat History from DB
-history = get_chat_history(st.session_state.active_session)
+with tab_dash:
+    render_dashboard()
 
-# Display Messages
-for msg in history:
-    with st.chat_message(msg["role"]):
-        st.markdown(msg["content"])
-
-# Chat Input
-if prompt := st.chat_input("Ask about your workouts, recovery, or routine updates..."):
-    # 1. Display User Message
-    with st.chat_message("user"):
-        st.markdown(prompt)
-    
-    # 2. Save to DB
-    save_message(st.session_state.active_session, "user", prompt)
-    
-    # 3. LangGraph Processing
-    with st.chat_message("assistant"):
-        message_placeholder = st.empty()
-        message_placeholder.text("Thinking...")
-        
-        # Construct LangChain message history for the graph
-        # We reload full history from DB to ensure context window is accurate
-        lc_messages = []
-        for h in history:
-            if h["role"] == "user":
-                lc_messages.append(HumanMessage(content=h["content"]))
-            else:
-                lc_messages.append(AIMessage(content=h["content"]))
-        lc_messages.append(HumanMessage(content=prompt))
-        
-        # Invoke Agent
-        try:
-            response = fitness_agent.invoke({"messages": lc_messages, "user_id": "user"})
-            ai_response = response["messages"][-1].content
-            
-            message_placeholder.markdown(ai_response)
-            
-            # 4. Save AI Response to DB
-            save_message(st.session_state.active_session, "assistant", ai_response)
-            
-        except Exception as e:
-            message_placeholder.error(f"Error: {str(e)}")
+with tab_chat:
+    if "session_id" in st.session_state:
+        render_chat(st.session_state.session_id)
+    else:
+        st.error("No active session.")

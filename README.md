@@ -1,84 +1,202 @@
-# Fitness Bridge AI
+# Fitness Bridge AI 🏋️
 
-A Streamlit-powered AI fitness coach that integrates with Hevy and Fitbit to provide personalized workout recommendations based on your training data and biological metrics.
+> **A local-first, multiagent AI fitness coach** that connects your Strava workouts, Fitbit biometrics, and Hevy training logs to give you personalised coaching that is grounded in real data — not generic advice.
 
-## Features
+[![Python 3.13](https://img.shields.io/badge/python-3.13-blue.svg)](https://python.org)
+[![LangGraph](https://img.shields.io/badge/orchestration-LangGraph-green)](https://github.com/langchain-ai/langgraph)
+[![Ollama](https://img.shields.io/badge/LLM-Ollama%20%7C%20Qwen2.5-orange)](https://ollama.com)
+[![Streamlit](https://img.shields.io/badge/UI-Streamlit-red)](https://streamlit.io)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-- **AI-Powered Coaching**: Conversational AI agent using LangGraph and Azure OpenAI to analyze workouts and suggest optimizations.
-- **Hevy Integration**: Fetch workout routines, recent workouts, and update routines.
-- **Fitbit Integration**: Retrieve sleep data and heart rate for readiness assessment.
-- **Chat Interface**: Persistent chat sessions with history stored in SQLite.
-- **Connection Monitoring**: Real-time status checks for API connections.
+---
 
-## Prerequisites
+## What it does
 
-- Python 3.11+
-- Hevy API Key (from [Hevy Developer Portal](https://api.hevyapp.com/))
-- Fitbit Access Token (via OAuth2 from [Fitbit Developer](https://dev.fitbit.com/))
-- Azure OpenAI Account (for the AI agent)
+Fitness Bridge AI listens to your body and your training history, then answers questions like:
 
-## Installation
+- *"Am I recovered enough to train hard today?"*
+- *"How has my bench press been progressing over the last 6 weeks?"*
+- *"My ACWR is trending high — what should I change this week?"*
 
-1. Clone the repository:
+Every answer is backed by numbers computed from your own data. The LLM narrates; the algorithms decide.
 
-   ```bash
-   git clone https://github.com/ThirtyNimrod/fitness-bridge.git
-   cd fitness-bridge
-   ```
+---
 
-2. Install dependencies:
+## Architecture
 
-   ```bash
-   pip install -r requirements.txt
-   ```
+```
+User Query
+    │
+    ▼
+Input Guardrail (keyword + LLM classifier)
+    │
+    ▼
+LangGraph Router (classifies intent)
+    │
+    ├──► Readiness Agent (sleep · HRV · resting HR)
+    ├──► Progress Agent (ACWR · volume · exercise history)
+    └──► Coach Agent    (synthesises both streams)
+              │
+              ▼
+         Tool Calls → Analysis Layer (pure Python algorithms)
+                              │
+                         API Clients (Strava · Fitbit)
+                              │
+                         diskcache (1h TTL)
+    │
+    ▼
+Output Guardrail (number cross-check)
+    │
+    ▼
+Memory Manager (save turn · summarise · extract facts)
+    │
+    ▼
+Response → Streamlit UI
+```
 
-## Setup
+**Core design principles:**
+1. **Algorithms own the analysis. LLM owns the narration.** No business logic inside prompts.
+2. **Cache aggressively at the edges.** All API calls are wrapped with a 1-hour diskcache TTL.
+3. **Each agent has one job.** The Router classifies; specialists handle completely.
 
-1. Create a `.env` file in the root directory:
+---
 
-   ```env
-   HEVY_API_KEY=your_hevy_api_key
-   FITBIT_ACCESS_TOKEN=your_fitbit_access_token
-   AZURE_OPENAI_API_KEY=your_azure_openai_key
-   AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com/
-   AZURE_OPENAI_API_VERSION=2024-02-15-preview
-   ```
+## Tech Stack
 
-2. Ensure your Azure OpenAI deployment is set to "gpt-4o" (or update `src/graph/agent.py` accordingly).
+| Concern | Library |
+|---|---|
+| LLM | `ollama` + `langchain-ollama` (Qwen2.5:4b, local) |
+| Orchestration | `langgraph` — stateful agent graphs |
+| API caching | `diskcache` — persistent, TTL-aware |
+| API retries | `tenacity` — exponential backoff |
+| Data | `pandas` |
+| Validation | `pydantic` |
+| UI | `streamlit` |
+| DB | `sqlite3` — chat history + semantic memory |
 
-## Usage
+---
 
-Run the application:
+## Data Sources
+
+| Source | What it provides |
+|---|---|
+| **Strava** | Activity metadata, workout title |
+| **Hevy** (via Strava description) | Exercise names, sets, reps, weights |
+| **Fitbit** | Sleep duration, efficiency, HRV (RMSSD), resting heart rate |
+
+---
+
+## Memory Architecture (Three Tiers)
+
+| Tier | Storage | Lifetime |
+|---|---|---|
+| Short-term | SQLite `messages` table, last N turns | Per session |
+| Long-term | SQLite `messages` with `role='summary'` | Compressed whenever history > 20 messages |
+| Semantic | SQLite `semantic_facts` table | Persistent — injuries, goals, preferences |
+
+---
+
+## Quickstart
+
+### Prerequisites
+
+- Python 3.13
+- [Ollama](https://ollama.com/) installed and running
+- Strava API credentials
+- Fitbit API credentials (Personal app type for HRV access)
+
+### 1. Environment Setup
+
+```bash
+# Windows — run the automated setup script
+scripts\SETUP.bat
+
+# Or manually:
+py -3.13 -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+```
+
+### 2. Configure credentials
+
+```bash
+cp .env.example .env
+# Edit .env and fill in your API tokens
+```
+
+### 3. Start Ollama
+
+```bash
+ollama pull qwen2.5:4b
+ollama serve
+```
+
+### 4. Run the app
 
 ```bash
 streamlit run app.py
 ```
 
-Open your browser to the provided URL. The app will:
+### 5. Run the test suite
 
-- Check API connections in the sidebar.
-- Allow creating new chat sessions or loading past ones.
-- Enable chatting with the AI coach about workouts, recovery, and routine updates.
+```bash
+pytest
+```
 
-### Example Queries
+---
 
-- "How were my last 3 workouts?"
-- "Am I ready to train today based on my sleep?"
-- "Find my 'Push Day' routine."
+## Strava + Hevy Integration
 
-## Architecture
+Hevy exports workout data into the Strava activity **description** field as plain text. Fitness Bridge parses this with `src/parsers/hevy_parser.py` to extract structured sets, reps, and weights without any LLM involvement.
 
-- **app.py**: Main Streamlit application handling UI, chat logic, and API status.
-- **src/clients/**: API client classes for Hevy and Fitbit.
-- **src/graph/agent.py**: LangGraph-based AI agent with tool integration.
-- **src/tools/fitness_tools.py**: LangChain tools for data fetching.
-- **src/utils/database.py**: SQLite database for chat history.
-- **config.py**: (Currently unused; reserved for configuration management).
+**Enable in Hevy:** Settings → Integrations → Connect Strava → Enable "Share activities"
 
-## Contributing
+---
 
-Contributions are welcome! Please open issues or pull requests on GitHub.
+## Readiness Score (0–100)
+
+| Component | Weight | Source |
+|---|---|---|
+| Sleep duration + efficiency | 0–40 pts | Fitbit Sleep API |
+| HRV vs. rolling baseline | 0–40 pts | Fitbit HRV API |
+| Resting HR vs. baseline | 0–20 pts | Fitbit Heart Rate API |
+
+---
+
+## Project Structure
+
+```
+fitness-bridge/
+├── app.py                  # Streamlit entrypoint
+├── config.py               # All constants and env loading
+├── requirements.txt
+├── scripts/
+│   └── SETUP.bat           # One-click environment setup
+├── src/
+│   ├── clients/            # Strava + Fitbit API wrappers
+│   ├── parsers/            # Hevy plaintext → structured data
+│   ├── analysis/           # Pure Python scoring algorithms
+│   ├── memory/             # Three-tier memory system
+│   ├── guardrails/         # Input + output validation
+│   └── agents/             # LangGraph agents + tools
+├── ui/
+│   ├── dashboard.py        # Training overview tab
+│   └── chat.py             # AI coach chat tab
+├── tests/                  # pytest test suite
+└── docs/                   # Technical documentation
+```
+
+---
+
+## Future Roadmap
+
+- OAuth UI flow for token refresh (currently manual via `.env`)
+- Vector search over session history for semantic queries
+- Nutrition integration (MyFitnessPal / Cronometer)
+- Android port — Flutter frontend + FastAPI backend + Gemini Nano
+
+---
 
 ## License
 
-MIT License - see [LICENSE](LICENSE) for details.
+MIT

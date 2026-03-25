@@ -1,74 +1,117 @@
 import sqlite3
-import json
+import os
 import uuid
-from datetime import datetime
+from config import DB_PATH, SHORT_TERM_WINDOW
 
-DB_PATH = "chat_history.db"
+def get_connection():
+    return sqlite3.connect(DB_PATH)
 
 def init_db():
-    """Initialize the SQLite database for chat history."""
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    # Create sessions table
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS sessions (
-            id TEXT PRIMARY KEY,
-            title TEXT,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    # Create messages table
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS messages (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            session_id TEXT,
-            role TEXT,
-            content TEXT,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY(session_id) REFERENCES sessions(id)
-        )
-    ''')
-    conn.commit()
-    conn.close()
+    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        
+        # Sessions Table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS sessions (
+                id TEXT PRIMARY KEY,
+                title TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        
+        # Messages Table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT,
+                role TEXT,
+                content TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(session_id) REFERENCES sessions(id)
+            )
+        ''')
+        
+        # Semantic Facts Table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS semantic_facts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                key TEXT UNIQUE,
+                value TEXT,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        conn.commit()
 
-def create_session(title="New Workout Chat"):
-    """Create a new chat session."""
+def create_session(title="New Session"):
     session_id = str(uuid.uuid4())
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("INSERT INTO sessions (id, title) VALUES (?, ?)", (session_id, title))
-    conn.commit()
-    conn.close()
+    with get_connection() as conn:
+        conn.execute('INSERT INTO sessions (id, title) VALUES (?, ?)', (session_id, title))
+        conn.commit()
     return session_id
 
 def get_sessions():
-    """Get all chat sessions."""
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("SELECT id, title, created_at FROM sessions ORDER BY created_at DESC")
-    sessions = c.fetchall()
-    conn.close()
-    return sessions
+    with get_connection() as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM sessions ORDER BY created_at DESC')
+        return [dict(row) for row in cursor.fetchall()]
 
 def save_message(session_id, role, content):
-    """Save a message to the database."""
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute(
-        "INSERT INTO messages (session_id, role, content) VALUES (?, ?, ?)",
-        (session_id, role, content)
-    )
-    conn.commit()
-    conn.close()
+    with get_connection() as conn:
+        conn.execute(
+            'INSERT INTO messages (session_id, role, content) VALUES (?, ?, ?)',
+            (session_id, role, content)
+        )
+        conn.commit()
 
-def get_chat_history(session_id):
-    """Retrieve chat history for a session."""
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute(
-        "SELECT role, content FROM messages WHERE session_id = ? ORDER BY created_at ASC",
-        (session_id,)
-    )
-    rows = c.fetchall()
-    conn.close()
-    return [{"role": r[0], "content": r[1]} for r in rows]
+def get_chat_history(session_id, limit=SHORT_TERM_WINDOW):
+    with get_connection() as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        # Excludes summary messages by fetching only user/assistant
+        cursor.execute('''
+            SELECT role, content FROM (
+                SELECT role, content, created_at 
+                FROM messages 
+                WHERE session_id = ? AND role IN ('user', 'assistant') 
+                ORDER BY created_at DESC 
+                LIMIT ?
+            ) ORDER BY created_at ASC
+        ''', (session_id, limit))
+        return [dict(row) for row in cursor.fetchall()]
+
+def get_full_history(session_id):
+    with get_connection() as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT role, content 
+            FROM messages 
+            WHERE session_id = ? AND role IN ('user', 'assistant') 
+            ORDER BY created_at ASC
+        ''', (session_id,))
+        return [dict(row) for row in cursor.fetchall()]
+
+def upsert_fact(key, value):
+    with get_connection() as conn:
+        conn.execute('''
+            INSERT INTO semantic_facts (key, value) 
+            VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET 
+                value=excluded.value,
+                updated_at=CURRENT_TIMESTAMP
+        ''', (key, value))
+        conn.commit()
+
+def get_all_facts():
+    with get_connection() as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute('SELECT key, value FROM semantic_facts')
+        return {row['key']: row['value'] for row in cursor.fetchall()}
+
+def delete_fact(key):
+    with get_connection() as conn:
+        conn.execute('DELETE FROM semantic_facts WHERE key = ?', (key,))
+        conn.commit()

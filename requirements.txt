@@ -1,8 +1,10 @@
 streamlit
 langchain
-langchain-openai
+langchain-ollama
 langgraph
 pandas
-python-dotenv
-matplotlib
+diskcache
+tenacity
+pydantic
 requests
+python-dotenv
