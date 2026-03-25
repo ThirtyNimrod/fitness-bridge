@@ -11,6 +11,7 @@ sys.path.insert(0, base_dir)
 load_dotenv()
 
 from src.utils.database import init_db, create_session, get_sessions
+from src.utils.logger import ui_logger, app_logger
 from src.clients.strava_client import StravaClient
 from src.clients.fitbit_client import FitbitClient
 from ui.dashboard import render_dashboard
@@ -18,7 +19,7 @@ from ui.chat import render_chat
 
 init_db()
 
-st.set_page_config(title="Fitness Bridge AI", layout="wide", page_icon="🏋️")
+st.set_page_config(page_title="Fitness Bridge AI", layout="wide", page_icon="🏋️")
 
 # Sidebar
 with st.sidebar:
@@ -27,19 +28,25 @@ with st.sidebar:
     try:
         strava = StravaClient()
         if strava.check_connection():
+            ui_logger.info("Strava Connected successfully")
             st.success("✅ Strava Connected")
         else:
+            ui_logger.warning("Strava Not Connected")
             st.error("❌ Strava Not Connected")
     except Exception as e:
+        ui_logger.error(f"Strava Error: {str(e)[:50]}")
         st.error(f"❌ Strava Error: {str(e)[:50]}")
         
     try:
         fitbit = FitbitClient()
         if fitbit.check_connection():
+            ui_logger.info("Fitbit Connected successfully")
             st.success("✅ Fitbit Connected")
         else:
+            ui_logger.warning("Fitbit Not Connected")
             st.error("❌ Fitbit Not Connected")
     except Exception as e:
+        ui_logger.error(f"Fitbit Error: {str(e)[:50]}")
         st.error(f"❌ Fitbit Error: {str(e)[:50]}")
 
     st.divider()
@@ -47,6 +54,7 @@ with st.sidebar:
     st.header("Sessions")
     if st.button("+ New Chat", use_container_width=True):
         st.session_state.session_id = create_session("New Session")
+        ui_logger.info(f"Created new chat session: {st.session_state.session_id}")
         st.rerun()
 
     sessions = get_sessions()
@@ -64,6 +72,7 @@ with st.sidebar:
         st.write("No prior chats.")
         if "session_id" not in st.session_state:
             st.session_state.session_id = create_session("Initial Session")
+            ui_logger.info(f"Created initial chat session: {st.session_state.session_id}")
 
 # Main Area
 tab_dash, tab_chat = st.tabs(["📊 Dashboard", "💬 AI Coach"])

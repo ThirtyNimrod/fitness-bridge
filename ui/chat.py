@@ -6,6 +6,7 @@ from src.guardrails.input_guard import InputGuardrail
 from src.guardrails.output_guard import OutputGuardrail
 from src.agents.router import build_graph, llm
 from src.agents.state import AgentState
+from src.utils.logger import ui_logger
 
 manager = MemoryManager()
 input_guardrail = InputGuardrail()
@@ -54,7 +55,7 @@ def run_agent(query, session_id):
         # Step 5: Output guardrail
         valid, issue = output_guardrail.validate_response(response_text, tool_data)
         if not valid:
-            print(f"[GUARDRAIL WARNING] {issue}")
+            ui_logger.warning(f"[GUARDRAIL WARNING] {issue}")
 
         # Step 6: Save turn + extract facts
         manager.save_turn(session_id, query, response_text)

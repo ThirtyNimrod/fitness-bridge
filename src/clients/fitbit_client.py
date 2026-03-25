@@ -2,6 +2,7 @@ import base64
 import requests
 from tenacity import retry, wait_exponential, stop_after_attempt
 from src.utils.cache import cached
+from src.utils.logger import app_logger
 
 from config import (
     FITBIT_CLIENT_ID,
@@ -38,14 +39,16 @@ class FitbitClient:
         if res.status_code == 200:
             json_data = res.json()
             self.access_token = json_data.get("access_token")
+            app_logger.info("Fitbit token refresh successful")
         else:
+            app_logger.error(f"Fitbit token refresh failed: {res.text}")
             raise AuthError(f"Fitbit token refresh failed: {res.text}")
 
     def _headers(self):
         return {"Authorization": f"Bearer {self.access_token}"}
 
     @cached(ttl=3600, ignore=('self',))
-    @retry(wait=wait_exponential(multiplier=1, min=2, max=10), stop=stop_after_attempt(3))
+    @retry(wait=wait_exponential(multiplier=1, min=2, max=10), stop=stop_after_attempt(3), reraise=True)
     def get_sleep(self, date_str):
         # date_str format: "YYYY-MM-DD"
         url = f"{self.base_url}/user/-/sleep/date/{date_str}.json"
@@ -54,7 +57,7 @@ class FitbitClient:
         return res.json()
 
     @cached(ttl=3600, ignore=('self',))
-    @retry(wait=wait_exponential(multiplier=1, min=2, max=10), stop=stop_after_attempt(3))
+    @retry(wait=wait_exponential(multiplier=1, min=2, max=10), stop=stop_after_attempt(3), reraise=True)
     def get_hrv(self, date_str):
         url = f"{self.base_url}/user/-/hrv/date/{date_str}.json"
         res = requests.get(url, headers=self._headers())
@@ -62,7 +65,7 @@ class FitbitClient:
         return res.json()
 
     @cached(ttl=3600, ignore=('self',))
-    @retry(wait=wait_exponential(multiplier=1, min=2, max=10), stop=stop_after_attempt(3))
+    @retry(wait=wait_exponential(multiplier=1, min=2, max=10), stop=stop_after_attempt(3), reraise=True)
     def get_resting_hr(self, date_str):
         url = f"{self.base_url}/user/-/activities/heart/date/{date_str}/1d.json"
         res = requests.get(url, headers=self._headers())

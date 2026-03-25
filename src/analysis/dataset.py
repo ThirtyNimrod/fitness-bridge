@@ -4,6 +4,7 @@ from src.clients.strava_client import StravaClient
 from src.clients.fitbit_client import FitbitClient
 from src.parsers.hevy_parser import parse_description
 from src.analysis.readiness import compute_readiness
+from src.utils.logger import app_logger
 
 def build_session_record(activity, exercises, readiness):
     muscle_groups = list(set([e.get("muscle_group") for e in exercises if e.get("muscle_group")]))
@@ -39,13 +40,13 @@ def build_dataset(n_days=30):
         strava_client = StravaClient()
         fitbit_client = FitbitClient()
     except Exception as e:
-        print(f"Warning: Client init failed. Proceeding with empty dataset. Error: {e}")
+        app_logger.warning(f"Client init failed. Proceeding with empty dataset. Error: {e}")
         return pd.DataFrame()
         
     try:
         activities = strava_client.get_activities(per_page=n_days)
     except Exception as e:
-        print(f"Dataset warning: Could not fetch activities: {e}")
+        app_logger.warning(f"Could not fetch activities: {e}")
         return pd.DataFrame()
         
     dataset = []

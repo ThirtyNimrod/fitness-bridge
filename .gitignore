@@ -32,11 +32,16 @@ data/*.db-wal
 # === IDE / OS ===
 .vscode/
 .idea/
+.brain/
 *.DS_Store
 Thumbs.db
 
 # === Streamlit ===
 .streamlit/
+
+# === Logs ===
+logs/
+tests/testing-logs/
 
 # === Ollama / model artifacts ===
 *.gguf

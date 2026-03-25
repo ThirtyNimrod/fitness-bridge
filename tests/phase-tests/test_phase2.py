@@ -7,36 +7,37 @@ sys.path.insert(0, base_dir)
 
 from src.clients.strava_client import StravaClient, AuthError as StravaAuthError
 from src.clients.fitbit_client import FitbitClient, AuthError as FitbitAuthError
+from src.utils.logger import app_logger
 
 def test_clients():
-    print("Testing Strava Client...")
+    app_logger.info("Testing Strava Client...")
     try:
         strava = StravaClient()
         if strava.check_connection():
-            print("Strava connection OK.")
+            app_logger.info("Strava connection OK.")
             acts = strava.get_activities(per_page=1)
-            print(f"Fetched {len(acts)} activities from Strava.")
+            app_logger.info(f"Fetched {len(acts)} activities from Strava.")
         else:
-            print("Strava connection Failed.")
+            app_logger.warning("Strava connection Failed.")
     except Exception as e:
-        print(f"Strava test error: {e}")
+        app_logger.error(f"Strava test error: {e}")
 
-    print("\nTesting Fitbit Client...")
+    app_logger.info("Testing Fitbit Client...")
     try:
         fitbit = FitbitClient()
         if fitbit.check_connection():
-            print("Fitbit connection OK.")
+            app_logger.info("Fitbit connection OK.")
             import datetime
             today = datetime.date.today().isoformat()
             try:
                 hrv = fitbit.get_hrv(today)
-                print(f"Fetched Fitbit HRV for {today}.")
+                app_logger.info(f"Fetched Fitbit HRV for {today}.")
             except Exception as fe:
-                print(f"API Call failed (maybe token lacks scopes?): {fe}")
+                app_logger.error(f"API Call failed (maybe token lacks scopes?): {fe}")
         else:
-            print("Fitbit connection Failed.")
+            app_logger.warning("Fitbit connection Failed.")
     except Exception as e:
-        print(f"Fitbit test error: {e}")
+        app_logger.error(f"Fitbit test error: {e}")
 
 if __name__ == "__main__":
     test_clients()
