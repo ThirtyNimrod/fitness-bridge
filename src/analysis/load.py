@@ -2,15 +2,22 @@ import pandas as pd
 from datetime import date, timedelta
 import json
 
+
+def _prepare_sessions_df(sessions_df):
+    df = sessions_df.copy()
+    df['date_obj'] = pd.to_datetime(df['date'], errors='coerce').dt.date
+    df['total_volume_kg'] = pd.to_numeric(df.get('total_volume_kg', 0), errors='coerce').fillna(0.0)
+    df['duration_min'] = pd.to_numeric(df.get('duration_min', 0), errors='coerce').fillna(0.0)
+    return df.dropna(subset=['date_obj'])
+
 def compute_weekly_load(sessions_df):
     if sessions_df.empty:
         return {"total_volume_kg": 0, "total_duration_min": 0, "session_count": 0, "avg_volume_per_session": 0}
         
-    sessions_df = sessions_df.copy()
-    sessions_df['date_obj'] = pd.to_datetime(sessions_df['date']).dt.date
-    seven_days_ago = date.today() - timedelta(days=7)
+    sessions_df = _prepare_sessions_df(sessions_df)
+    seven_days_ago = date.today() - timedelta(days=6)
     
-    this_week = sessions_df[sessions_df['date_obj'] > seven_days_ago]
+    this_week = sessions_df[sessions_df['date_obj'] >= seven_days_ago]
     
     vol = float(this_week['total_volume_kg'].sum())
     dur = float(this_week['duration_min'].sum())
@@ -27,16 +34,35 @@ def compute_acwr(sessions_df):
     if sessions_df.empty: 
         return None
     
-    sessions_df = sessions_df.copy()
-    sessions_df['date_obj'] = pd.to_datetime(sessions_df['date']).dt.date
+    sessions_df = _prepare_sessions_df(sessions_df)
+    if sessions_df.empty:
+        return None
+
     today = date.today()
-    
-    acute_start = today - timedelta(days=7)
-    chronic_start = today - timedelta(days=28)
-    
-    acute_load = sessions_df[(sessions_df['date_obj'] > acute_start) & (sessions_df['date_obj'] <= today)]['total_volume_kg'].sum()
-    chronic_load_total = sessions_df[(sessions_df['date_obj'] > chronic_start) & (sessions_df['date_obj'] <= today)]['total_volume_kg'].sum()
-    chronic_load = chronic_load_total / 4.0
+
+    acute_start = today - timedelta(days=6)
+    acute_mask = (sessions_df['date_obj'] >= acute_start) & (sessions_df['date_obj'] <= today)
+    acute_load = float(sessions_df[acute_mask]['total_volume_kg'].sum())
+
+    # Chronic load: prior 28 days excluding the acute week for cleaner comparison.
+    chronic_end = acute_start - timedelta(days=1)
+    chronic_start = chronic_end - timedelta(days=27)
+    chronic_mask = (sessions_df['date_obj'] >= chronic_start) & (sessions_df['date_obj'] <= chronic_end)
+    chronic_window = sessions_df[chronic_mask]
+
+    chronic_divisor_weeks = None
+    if len(chronic_window) > 0:
+        span_days = (chronic_window['date_obj'].max() - chronic_window['date_obj'].min()).days + 1
+        chronic_divisor_weeks = max(1.0, span_days / 7.0)
+
+    if len(chronic_window) == 0:
+        # Fallback for sparse history: use up to 28 days including acute data.
+        fallback_start = today - timedelta(days=27)
+        chronic_window = sessions_df[(sessions_df['date_obj'] >= fallback_start) & (sessions_df['date_obj'] <= today)]
+        chronic_divisor_weeks = 4.0
+
+    chronic_load_total = float(chronic_window['total_volume_kg'].sum())
+    chronic_load = chronic_load_total / float(chronic_divisor_weeks or 4.0)
     
     if chronic_load == 0: 
         return None
@@ -52,6 +78,7 @@ def compute_acwr(sessions_df):
     return {
         "acute_load": float(acute_load),
         "chronic_load": float(chronic_load),
+        "ratio_raw": float(ratio),
         "ratio": round(float(ratio), 2),
         "zone": classify_acwr_zone(ratio)
     }
@@ -61,7 +88,7 @@ def detect_overreach(sessions_df):
     if acwr is None: 
         return False, "Insufficient history"
     
-    if acwr["ratio"] > 1.5:
+    if acwr["zone"] == "overreach_risk":
         return True, f"ACWR is {acwr['ratio']} — training load spiked significantly this week"
     return False, "Load looks manageable"
 

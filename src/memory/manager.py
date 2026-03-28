@@ -1,6 +1,10 @@
 from src.memory.store import ShortTermStore, LongTermStore, SemanticStore
 from src.utils import database
 import json
+import re
+
+MAX_FACTS_PER_RESPONSE = 20
+FACT_KEY_PATTERN = re.compile(r"^[a-zA-Z0-9_\- ]{1,64}$")
 
 class MemoryManager:
     def __init__(self):
@@ -71,7 +75,22 @@ class MemoryManager:
         
         try:
             facts = json.loads(result_text)
+            if not isinstance(facts, dict):
+                return
+
+            accepted = 0
             for key, value in facts.items():
-                self.semantic.upsert(key, str(value))
+                if accepted >= MAX_FACTS_PER_RESPONSE:
+                    break
+                if not isinstance(key, str):
+                    continue
+                key_clean = key.strip().lower()
+                if not FACT_KEY_PATTERN.match(key_clean):
+                    continue
+                if isinstance(value, (dict, list)):
+                    continue
+
+                self.semantic.upsert(key_clean, str(value))
+                accepted += 1
         except Exception:
             pass

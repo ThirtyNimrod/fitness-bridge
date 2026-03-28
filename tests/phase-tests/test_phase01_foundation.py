@@ -20,7 +20,8 @@ load_dotenv(os.path.join(BASE_DIR, ".env"))
 import config
 from src.utils.database import (
     init_db, create_session, get_sessions, save_message,
-    get_chat_history, get_full_history, upsert_fact, get_all_facts, delete_fact
+    get_chat_history, get_full_history, upsert_fact, get_all_facts, delete_fact,
+    get_connection, validate_workout_record
 )
 from src.utils.cache import cached, get_cache
 
@@ -115,6 +116,31 @@ class TestDatabase:
         delete_fact("injury")
         facts = get_all_facts()
         assert "injury" not in facts
+
+    def test_schema_version_applied(self):
+        with get_connection() as conn:
+            version = conn.execute("PRAGMA user_version").fetchone()[0]
+        assert version >= 2
+
+    def test_validate_workout_record_rejects_negative_values(self):
+        bad = {
+            "activity_id": "1",
+            "date": "2026-03-28",
+            "duration_min": -1,
+        }
+        with pytest.raises(ValueError):
+            validate_workout_record(bad)
+
+    def test_validate_workout_record_normalizes_boolean_flags(self):
+        record = {
+            "activity_id": "1",
+            "date": "2026-03-28",
+            "has_drop_sets": True,
+            "has_failure_sets": False,
+        }
+        validated = validate_workout_record(record)
+        assert validated["has_drop_sets"] == 1
+        assert validated["has_failure_sets"] == 0
 
 
 # ---------------------------------------------------------------------------

@@ -4,7 +4,7 @@ Delta sync engine: pulls new Strava activities + matching Fitbit biometrics,
 builds unified session records, and upserts them into the local SQLite cache.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from src.clients.strava_client import StravaClient
 from src.clients.fitbit_client import FitbitClient
 from src.parsers.hevy_parser import parse_description
@@ -12,6 +12,7 @@ from src.analysis.readiness import compute_readiness
 from src.analysis.dataset import build_session_record
 from src.utils.database import (
     upsert_workout,
+    validate_workout_record,
     get_last_synced,
     set_last_synced,
 )
@@ -25,6 +26,26 @@ def safe_fetch(fn, *args):
     except Exception as e:
         app_logger.warning(f"safe_fetch failed for {fn.__name__}: {e}")
         return None
+
+
+def _parse_activity_timestamp(raw_date: str):
+    """Parse Strava timestamps to aware UTC datetimes, returning None when invalid."""
+    try:
+        parsed = datetime.fromisoformat(raw_date.replace("Z", "+00:00"))
+    except (ValueError, TypeError, AttributeError):
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _to_utc_aware(dt: datetime):
+    """Normalize DB and API datetimes to aware UTC for safe comparisons."""
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
 
 
 class SyncEngine:
@@ -48,7 +69,7 @@ class SyncEngine:
         Returns:
             {"synced": N, "errors": M, "last_synced_at": datetime}
         """
-        last_synced = get_last_synced("strava")  # None on very first run
+        last_synced = _to_utc_aware(get_last_synced("strava"))  # None on very first run
         app_logger.info(
             f"SyncEngine.sync() starting — last_synced={last_synced}, force={force}"
         )
@@ -59,20 +80,21 @@ class SyncEngine:
         for activity in activities:
             raw_date = activity.get("start_date_local", "")
             if not raw_date:
+                app_logger.warning(
+                    f"Skipping activity {activity.get('id')} due to missing start_date_local"
+                )
                 continue
+
+            activity_dt = _parse_activity_timestamp(raw_date)
+            if activity_dt is None:
+                app_logger.warning(
+                    f"Skipping activity {activity.get('id')} due to malformed timestamp: {raw_date}"
+                )
+                continue
+
             if not force and last_synced:
-                try:
-                    activity_dt = datetime.fromisoformat(raw_date.replace("Z", "+00:00"))
-                    # Make last_synced timezone-aware if activity_dt is
-                    if activity_dt.tzinfo and last_synced.tzinfo is None:
-                        from datetime import timezone
-                        last_synced_aware = last_synced.replace(tzinfo=timezone.utc)
-                    else:
-                        last_synced_aware = last_synced
-                    if activity_dt <= last_synced_aware:
-                        continue  # already synced
-                except (ValueError, TypeError):
-                    pass  # parse failure → process anyway
+                if activity_dt <= last_synced:
+                    continue  # already synced
             new_activities.append((activity, raw_date[:10]))
 
         app_logger.info(f"Sync: {len(new_activities)} new activities to process")
@@ -94,7 +116,13 @@ class SyncEngine:
                     resting_hr,
                 )
                 record = build_session_record(detail or activity, exercises, readiness)
-                upsert_workout(record)
+                validated = validate_workout_record(record)
+                upsert_workout(validated)
+            except ValueError as e:
+                errors += 1
+                app_logger.warning(
+                    f"Sync validation skipped activity {activity.get('id')}: {e}"
+                )
             except Exception as e:
                 errors += 1
                 app_logger.error(
@@ -105,7 +133,7 @@ class SyncEngine:
         result = {
             "synced": len(new_activities),
             "errors": errors,
-            "last_synced_at": datetime.now(),
+            "last_synced_at": datetime.now(timezone.utc),
         }
         app_logger.info(f"Sync complete: {result}")
         return result

@@ -2,8 +2,7 @@ import json
 from langgraph.graph import StateGraph, END
 from langgraph.prebuilt import ToolNode
 from langchain_core.messages import ToolMessage
-from langchain_ollama import ChatOllama
-from config import OLLAMA_MODEL, OLLAMA_BASE_URL
+from src.agents.llm import get_llm
 from src.agents.state import AgentState
 from src.agents.readiness_agent import readiness_agent_node
 from src.agents.progress_agent import progress_agent_node
@@ -13,7 +12,7 @@ from src.agents.tools.readiness_tools import readiness_tools
 from src.agents.tools.progress_tools import progress_tools
 from src.agents.tools.coach_tools import coach_tools
 
-llm = ChatOllama(model=OLLAMA_MODEL, base_url=OLLAMA_BASE_URL, temperature=0.0)
+llm = get_llm(temperature=0.0)
 
 ROUTER_PROMPT = """
 You are a routing classifier for a fitness coaching app.

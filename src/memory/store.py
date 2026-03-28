@@ -1,6 +1,9 @@
 from src.utils import database
 from config import SHORT_TERM_WINDOW
 
+MAX_FACT_KEY_LEN = 64
+MAX_FACT_VALUE_LEN = 256
+
 class ShortTermStore:
     def get(self, session_id):
         return database.get_chat_history(session_id, limit=SHORT_TERM_WINDOW)
@@ -29,6 +32,12 @@ class SemanticStore:
         return database.get_all_facts()
 
     def upsert(self, key, value):
+        key = (key or "").strip()
+        value = (value or "").strip()
+        if not key:
+            return
+        key = key[:MAX_FACT_KEY_LEN]
+        value = value[:MAX_FACT_VALUE_LEN]
         database.upsert_fact(key, value)
 
     def delete(self, key):

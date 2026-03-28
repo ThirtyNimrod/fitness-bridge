@@ -1,4 +1,6 @@
 import base64
+from datetime import datetime, timedelta, timezone
+
 import requests
 from tenacity import retry, wait_exponential, stop_after_attempt
 from src.utils.cache import cached
@@ -10,6 +12,7 @@ from config import (
     FITBIT_CLIENT_SECRET,
     FITBIT_ACCESS_TOKEN,
     FITBIT_REFRESH_TOKEN,
+    FITBIT_TOKEN_EXPIRES_AT,
 )
 
 class AuthError(Exception):
@@ -19,9 +22,26 @@ class FitbitClient:
     def __init__(self):
         self.base_url = "https://api.fitbit.com/1"
         self.access_token = FITBIT_ACCESS_TOKEN
-        
-        if not self.check_connection():
+        self.token_expires_at = self._parse_expiry(FITBIT_TOKEN_EXPIRES_AT)
+
+        if self._is_token_expired():
             self._refresh_access_token()
+
+    def _parse_expiry(self, expiry_value):
+        if not expiry_value:
+            return None
+        try:
+            return datetime.fromtimestamp(int(expiry_value), tz=timezone.utc)
+        except (TypeError, ValueError, OSError):
+            return None
+
+    def _is_token_expired(self):
+        if not self.access_token:
+            return True
+        if not self.token_expires_at:
+            return False
+        # Refresh slightly early to avoid race conditions around expiration.
+        return datetime.now(timezone.utc) >= (self.token_expires_at - timedelta(minutes=2))
 
     def _refresh_access_token(self):
         url = "https://api.fitbit.com/oauth2/token"
@@ -41,10 +61,15 @@ class FitbitClient:
             json_data = res.json()
             self.access_token  = json_data.get("access_token")
             new_refresh        = json_data.get("refresh_token")
+            expires_in         = json_data.get("expires_in")
+            if expires_in:
+                self.token_expires_at = datetime.now(timezone.utc) + timedelta(seconds=int(expires_in))
             app_logger.info("Fitbit token refresh successful")
             write_token_to_env("FITBIT_ACCESS_TOKEN",  self.access_token)
             if new_refresh:
                 write_token_to_env("FITBIT_REFRESH_TOKEN", new_refresh)
+            if self.token_expires_at:
+                write_token_to_env("FITBIT_TOKEN_EXPIRES_AT", str(int(self.token_expires_at.timestamp())))
         else:
             app_logger.error(f"Fitbit token refresh failed: {res.text}")
             raise AuthError(f"Fitbit token refresh failed: {res.text}")
@@ -58,6 +83,9 @@ class FitbitClient:
         # date_str format: "YYYY-MM-DD"
         url = f"{self.base_url}/user/-/sleep/date/{date_str}.json"
         res = requests.get(url, headers=self._headers())
+        if res.status_code == 401:
+            self._refresh_access_token()
+            res = requests.get(url, headers=self._headers())
         res.raise_for_status()
         return res.json()
 
@@ -66,6 +94,9 @@ class FitbitClient:
     def get_hrv(self, date_str):
         url = f"{self.base_url}/user/-/hrv/date/{date_str}.json"
         res = requests.get(url, headers=self._headers())
+        if res.status_code == 401:
+            self._refresh_access_token()
+            res = requests.get(url, headers=self._headers())
         res.raise_for_status()
         return res.json()
 
@@ -74,6 +105,9 @@ class FitbitClient:
     def get_resting_hr(self, date_str):
         url = f"{self.base_url}/user/-/activities/heart/date/{date_str}/1d.json"
         res = requests.get(url, headers=self._headers())
+        if res.status_code == 401:
+            self._refresh_access_token()
+            res = requests.get(url, headers=self._headers())
         res.raise_for_status()
         data = res.json()
         

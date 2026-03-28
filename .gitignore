@@ -46,3 +46,12 @@ tests/testing-logs/
 # === Ollama / model artifacts ===
 *.gguf
 *.bin
+
+# === VS Code ===
+.vscode/
+.github/
+.brain/
+
+# === Misc ===
+*.bak
+*.tmp

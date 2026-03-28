@@ -8,6 +8,7 @@ import os
 import sys
 import pytest
 import tempfile
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -71,6 +72,41 @@ class TestTokenWriter:
 # ---------------------------------------------------------------------------
 
 class TestAPIClients:
+    def test_strava_client_refreshes_when_missing_token(self):
+        """Missing token should trigger refresh during client initialization."""
+        with patch("src.clients.strava_client.STRAVA_ACCESS_TOKEN", None), \
+             patch("src.clients.strava_client.STRAVA_TOKEN_EXPIRES_AT", None), \
+             patch.object(StravaClient, "_refresh_access_token") as mock_refresh:
+            StravaClient()
+            mock_refresh.assert_called_once()
+
+    def test_strava_client_does_not_refresh_when_token_not_expired(self):
+        """Valid non-expired token should skip refresh on init."""
+        future_epoch = int((datetime.now(timezone.utc) + timedelta(hours=1)).timestamp())
+        with patch("src.clients.strava_client.STRAVA_ACCESS_TOKEN", "token"), \
+             patch("src.clients.strava_client.STRAVA_TOKEN_EXPIRES_AT", str(future_epoch)), \
+             patch.object(StravaClient, "_refresh_access_token") as mock_refresh:
+            StravaClient()
+            mock_refresh.assert_not_called()
+
+    def test_fitbit_client_refreshes_when_expired(self):
+        """Expired token should trigger refresh during Fitbit client initialization."""
+        expired_epoch = int((datetime.now(timezone.utc) - timedelta(hours=1)).timestamp())
+        with patch("src.clients.fitbit_client.FITBIT_ACCESS_TOKEN", "token"), \
+             patch("src.clients.fitbit_client.FITBIT_TOKEN_EXPIRES_AT", str(expired_epoch)), \
+             patch.object(FitbitClient, "_refresh_access_token") as mock_refresh:
+            FitbitClient()
+            mock_refresh.assert_called_once()
+
+    def test_fitbit_client_does_not_refresh_when_token_not_expired(self):
+        """Non-expired token should skip refresh during Fitbit init."""
+        future_epoch = int((datetime.now(timezone.utc) + timedelta(hours=1)).timestamp())
+        with patch("src.clients.fitbit_client.FITBIT_ACCESS_TOKEN", "token"), \
+             patch("src.clients.fitbit_client.FITBIT_TOKEN_EXPIRES_AT", str(future_epoch)), \
+             patch.object(FitbitClient, "_refresh_access_token") as mock_refresh:
+            FitbitClient()
+            mock_refresh.assert_not_called()
+
     def test_strava_client_connection(self):
         """Verifies Strava API token connectivity by asserting check_connection() returns True."""
         try:

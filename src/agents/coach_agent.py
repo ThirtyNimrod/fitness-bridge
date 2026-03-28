@@ -1,12 +1,11 @@
 from langchain_core.messages import SystemMessage
-from langchain_ollama import ChatOllama
-from config import OLLAMA_MODEL, OLLAMA_BASE_URL
+from src.agents.llm import get_llm
 from src.agents.state import AgentState
 from src.agents.tools.coach_tools import coach_tools
 from src.agents.tools.readiness_tools import readiness_tools
 from src.agents.tools.progress_tools import progress_tools
 
-llm = ChatOllama(model=OLLAMA_MODEL, base_url=OLLAMA_BASE_URL, temperature=0.1)
+llm = get_llm(temperature=0.1)
 
 COACH_SYSTEM_PROMPT = """
 You are an elite strength and conditioning coach with access to complete

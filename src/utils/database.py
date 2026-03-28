@@ -1,12 +1,103 @@
 import sqlite3
 import os
 import uuid
-import json
 from datetime import datetime
 from config import DB_PATH, SHORT_TERM_WINDOW
 
+SCHEMA_VERSION = 2
+
 def get_connection():
     return sqlite3.connect(DB_PATH)
+
+
+def _set_schema_version(conn, version: int):
+    conn.execute(f"PRAGMA user_version = {int(version)}")
+
+
+def _get_schema_version(conn) -> int:
+    return int(conn.execute("PRAGMA user_version").fetchone()[0])
+
+
+def _migrate_workouts_table_with_constraints(conn):
+    """Rebuild workouts with domain constraints and copy only valid rows."""
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS workouts_v2 (
+            activity_id      TEXT PRIMARY KEY,
+            date             TEXT NOT NULL CHECK (length(date) = 10),
+            workout_title    TEXT,
+            duration_min     REAL CHECK (duration_min IS NULL OR duration_min >= 0),
+            total_volume_kg  REAL CHECK (total_volume_kg IS NULL OR total_volume_kg >= 0),
+            exercise_count   INTEGER CHECK (exercise_count IS NULL OR exercise_count >= 0),
+            set_count        INTEGER CHECK (set_count IS NULL OR set_count >= 0),
+            exercises_raw    TEXT,
+            muscle_groups    TEXT,
+            has_drop_sets    INTEGER CHECK (has_drop_sets IN (0, 1)),
+            has_failure_sets INTEGER CHECK (has_failure_sets IN (0, 1)),
+            sleep_hours      REAL CHECK (sleep_hours IS NULL OR sleep_hours >= 0),
+            sleep_efficiency REAL CHECK (sleep_efficiency IS NULL OR (sleep_efficiency >= 0 AND sleep_efficiency <= 100)),
+            hrv_ms           REAL CHECK (hrv_ms IS NULL OR hrv_ms >= 0),
+            resting_hr       REAL CHECK (resting_hr IS NULL OR resting_hr >= 0),
+            readiness_score  REAL CHECK (readiness_score IS NULL OR (readiness_score >= 0 AND readiness_score <= 100)),
+            readiness_label  TEXT,
+            synced_at        DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+
+    conn.execute('''
+        INSERT OR REPLACE INTO workouts_v2 (
+            activity_id, date, workout_title, duration_min,
+            total_volume_kg, exercise_count, set_count,
+            exercises_raw, muscle_groups, has_drop_sets, has_failure_sets,
+            sleep_hours, sleep_efficiency, hrv_ms, resting_hr,
+            readiness_score, readiness_label, synced_at
+        )
+        SELECT
+            activity_id,
+            date,
+            workout_title,
+            duration_min,
+            total_volume_kg,
+            exercise_count,
+            set_count,
+            exercises_raw,
+            muscle_groups,
+            CASE WHEN has_drop_sets IN (1, '1', 'true', 'True') THEN 1 ELSE 0 END,
+            CASE WHEN has_failure_sets IN (1, '1', 'true', 'True') THEN 1 ELSE 0 END,
+            sleep_hours,
+            sleep_efficiency,
+            hrv_ms,
+            resting_hr,
+            readiness_score,
+            readiness_label,
+            COALESCE(synced_at, CURRENT_TIMESTAMP)
+        FROM workouts
+        WHERE activity_id IS NOT NULL
+          AND date IS NOT NULL
+          AND length(date) = 10
+          AND (duration_min IS NULL OR duration_min >= 0)
+          AND (total_volume_kg IS NULL OR total_volume_kg >= 0)
+          AND (exercise_count IS NULL OR exercise_count >= 0)
+          AND (set_count IS NULL OR set_count >= 0)
+          AND (sleep_hours IS NULL OR sleep_hours >= 0)
+          AND (sleep_efficiency IS NULL OR (sleep_efficiency >= 0 AND sleep_efficiency <= 100))
+          AND (hrv_ms IS NULL OR hrv_ms >= 0)
+          AND (resting_hr IS NULL OR resting_hr >= 0)
+          AND (readiness_score IS NULL OR (readiness_score >= 0 AND readiness_score <= 100))
+    ''')
+
+    conn.execute('DROP TABLE workouts')
+    conn.execute('ALTER TABLE workouts_v2 RENAME TO workouts')
+
+
+def _run_migrations(conn):
+    current = _get_schema_version(conn)
+    if current < 2:
+        # Workouts table exists from v1 but lacked hard constraints.
+        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if "workouts" in tables:
+            _migrate_workouts_table_with_constraints(conn)
+        _set_schema_version(conn, 2)
+
 
 def init_db():
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
@@ -47,21 +138,21 @@ def init_db():
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS workouts (
                 activity_id      TEXT PRIMARY KEY,
-                date             TEXT NOT NULL,
+                date             TEXT NOT NULL CHECK (length(date) = 10),
                 workout_title    TEXT,
-                duration_min     REAL,
-                total_volume_kg  REAL,
-                exercise_count   INTEGER,
-                set_count        INTEGER,
+                duration_min     REAL CHECK (duration_min IS NULL OR duration_min >= 0),
+                total_volume_kg  REAL CHECK (total_volume_kg IS NULL OR total_volume_kg >= 0),
+                exercise_count   INTEGER CHECK (exercise_count IS NULL OR exercise_count >= 0),
+                set_count        INTEGER CHECK (set_count IS NULL OR set_count >= 0),
                 exercises_raw    TEXT,
                 muscle_groups    TEXT,
-                has_drop_sets    INTEGER,
-                has_failure_sets INTEGER,
-                sleep_hours      REAL,
-                sleep_efficiency REAL,
-                hrv_ms           REAL,
-                resting_hr       REAL,
-                readiness_score  REAL,
+                has_drop_sets    INTEGER CHECK (has_drop_sets IN (0, 1)),
+                has_failure_sets INTEGER CHECK (has_failure_sets IN (0, 1)),
+                sleep_hours      REAL CHECK (sleep_hours IS NULL OR sleep_hours >= 0),
+                sleep_efficiency REAL CHECK (sleep_efficiency IS NULL OR (sleep_efficiency >= 0 AND sleep_efficiency <= 100)),
+                hrv_ms           REAL CHECK (hrv_ms IS NULL OR hrv_ms >= 0),
+                resting_hr       REAL CHECK (resting_hr IS NULL OR resting_hr >= 0),
+                readiness_score  REAL CHECK (readiness_score IS NULL OR (readiness_score >= 0 AND readiness_score <= 100)),
                 readiness_label  TEXT,
                 synced_at        DATETIME DEFAULT CURRENT_TIMESTAMP
             )
@@ -75,7 +166,57 @@ def init_db():
             )
         ''')
 
+        _run_migrations(conn)
+
         conn.commit()
+
+
+def validate_workout_record(record: dict) -> dict:
+    """Validate and normalize a workout record before DB upsert."""
+    cleaned = dict(record or {})
+
+    activity_id = str(cleaned.get("activity_id") or "").strip()
+    if not activity_id:
+        raise ValueError("workout record missing activity_id")
+
+    date_value = str(cleaned.get("date") or "").strip()
+    try:
+        datetime.strptime(date_value, "%Y-%m-%d")
+    except ValueError as exc:
+        raise ValueError("workout record has invalid date") from exc
+
+    cleaned["activity_id"] = activity_id
+    cleaned["date"] = date_value
+
+    for key in ["duration_min", "total_volume_kg", "sleep_hours", "sleep_efficiency", "hrv_ms", "resting_hr", "readiness_score"]:
+        if cleaned.get(key) is None:
+            continue
+        cleaned[key] = float(cleaned[key])
+
+    for key in ["exercise_count", "set_count"]:
+        if cleaned.get(key) is None:
+            continue
+        cleaned[key] = int(cleaned[key])
+
+    for key in ["has_drop_sets", "has_failure_sets"]:
+        cleaned[key] = 1 if cleaned.get(key) else 0
+
+    non_negative_fields = [
+        "duration_min", "total_volume_kg", "exercise_count", "set_count",
+        "sleep_hours", "sleep_efficiency", "hrv_ms", "resting_hr", "readiness_score",
+    ]
+    for field in non_negative_fields:
+        value = cleaned.get(field)
+        if value is not None and value < 0:
+            raise ValueError(f"workout record has negative field: {field}")
+
+    if cleaned.get("sleep_efficiency") is not None and cleaned["sleep_efficiency"] > 100:
+        raise ValueError("workout record sleep_efficiency out of range")
+
+    if cleaned.get("readiness_score") is not None and cleaned["readiness_score"] > 100:
+        raise ValueError("workout record readiness_score out of range")
+
+    return cleaned
 
 def create_session(title="New Session"):
     session_id = str(uuid.uuid4())
@@ -154,6 +295,7 @@ def delete_fact(key):
 
 def upsert_workout(record: dict):
     """Insert or update a workout row keyed on activity_id."""
+    record = validate_workout_record(record)
     fields = [
         "activity_id", "date", "workout_title", "duration_min",
         "total_volume_kg", "exercise_count", "set_count",

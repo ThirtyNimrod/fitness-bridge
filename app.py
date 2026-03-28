@@ -50,35 +50,53 @@ def run_startup_sync():
 run_startup_sync()
 start_background_sync()
 
+
+@st.cache_data(ttl=120)
+def get_connection_statuses():
+    statuses = {
+        "strava": {"connected": False, "error": None},
+        "fitbit": {"connected": False, "error": None},
+    }
+
+    try:
+        statuses["strava"]["connected"] = StravaClient().check_connection()
+    except Exception as e:
+        statuses["strava"]["error"] = str(e)[:80]
+
+    try:
+        statuses["fitbit"]["connected"] = FitbitClient().check_connection()
+    except Exception as e:
+        statuses["fitbit"]["error"] = str(e)[:80]
+
+    return statuses
+
 st.set_page_config(page_title="Fitness Bridge AI", layout="wide", page_icon="🏋️")
 
 # Sidebar
 with st.sidebar:
     st.header("Connections")
 
-    try:
-        strava = StravaClient()
-        if strava.check_connection():
-            ui_logger.info("Strava Connected successfully")
-            st.success("✅ Strava Connected")
-        else:
-            ui_logger.warning("Strava Not Connected")
-            st.error("❌ Strava Not Connected")
-    except Exception as e:
-        ui_logger.error(f"Strava Error: {str(e)[:50]}")
-        st.error(f"❌ Strava Error: {str(e)[:50]}")
+    statuses = get_connection_statuses()
 
-    try:
-        fitbit = FitbitClient()
-        if fitbit.check_connection():
-            ui_logger.info("Fitbit Connected successfully")
-            st.success("✅ Fitbit Connected")
-        else:
-            ui_logger.warning("Fitbit Not Connected")
-            st.error("❌ Fitbit Not Connected")
-    except Exception as e:
-        ui_logger.error(f"Fitbit Error: {str(e)[:50]}")
-        st.error(f"❌ Fitbit Error: {str(e)[:50]}")
+    if statuses["strava"]["error"]:
+        ui_logger.error(f"Strava Error: {statuses['strava']['error']}")
+        st.error(f"❌ Strava Error: {statuses['strava']['error']}")
+    elif statuses["strava"]["connected"]:
+        ui_logger.info("Strava Connected successfully")
+        st.success("✅ Strava Connected")
+    else:
+        ui_logger.warning("Strava Not Connected")
+        st.error("❌ Strava Not Connected")
+
+    if statuses["fitbit"]["error"]:
+        ui_logger.error(f"Fitbit Error: {statuses['fitbit']['error']}")
+        st.error(f"❌ Fitbit Error: {statuses['fitbit']['error']}")
+    elif statuses["fitbit"]["connected"]:
+        ui_logger.info("Fitbit Connected successfully")
+        st.success("✅ Fitbit Connected")
+    else:
+        ui_logger.warning("Fitbit Not Connected")
+        st.error("❌ Fitbit Not Connected")
 
     st.divider()
 
@@ -88,6 +106,7 @@ with st.sidebar:
         with st.spinner("Syncing..."):
             try:
                 result = SyncEngine().sync(force=True)
+                get_connection_statuses.clear()
                 st.success(f"Synced {result['synced']} workouts.")
                 st.rerun()
             except Exception as e:

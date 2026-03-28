@@ -6,6 +6,16 @@ from src.utils.cache import get_cache
 from src.analysis.load import compute_weekly_load, compute_acwr
 from src.agents.tools.readiness_tools import get_todays_readiness
 
+
+@st.cache_data(ttl=60)
+def _get_dashboard_dataset(days: int):
+    return build_dataset(n_days=days)
+
+
+@st.cache_data(ttl=60)
+def _get_todays_readiness_payload():
+    return json.loads(get_todays_readiness.invoke({}))
+
 def format_set(s):
     if s.get("type") == "duration":
         return f"Set {s.get('set_number')}: {s.get('duration_str')}"
@@ -20,7 +30,7 @@ def format_set(s):
 def render_dashboard():
     st.header("Your Training Overview")
 
-    df = build_dataset(n_days=28)
+    df = _get_dashboard_dataset(days=28)
 
     if df.empty:
         st.info("No workout data found. Connect your Strava account and ensure you have recent activities.")
@@ -34,7 +44,7 @@ def render_dashboard():
     
     with col1:
         try:
-            today_readiness = json.loads(get_todays_readiness.invoke({}))
+            today_readiness = _get_todays_readiness_payload()
             if "score" in today_readiness:
                 st.metric("Today's Readiness", today_readiness["score"], today_readiness["label"])
             else:

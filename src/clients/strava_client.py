@@ -1,4 +1,5 @@
-import os
+from datetime import datetime, timedelta, timezone
+
 import requests
 from tenacity import retry, wait_exponential, stop_after_attempt
 from src.utils.cache import cached
@@ -6,9 +7,11 @@ from src.utils.logger import app_logger
 from src.utils.token_writer import write_token_to_env
 
 from config import (
+    STRAVA_ACCESS_TOKEN,
     STRAVA_CLIENT_ID,
     STRAVA_CLIENT_SECRET,
     STRAVA_REFRESH_TOKEN,
+    STRAVA_TOKEN_EXPIRES_AT,
 )
 
 class AuthError(Exception):
@@ -17,8 +20,29 @@ class AuthError(Exception):
 class StravaClient:
     def __init__(self):
         self.base_url = "https://www.strava.com/api/v3"
-        self.access_token = None
-        self._refresh_access_token()
+        self.access_token = STRAVA_ACCESS_TOKEN
+        self.token_expires_at = self._parse_expiry(STRAVA_TOKEN_EXPIRES_AT)
+        self._ensure_access_token()
+
+    def _parse_expiry(self, expiry_value):
+        if not expiry_value:
+            return None
+        try:
+            return datetime.fromtimestamp(int(expiry_value), tz=timezone.utc)
+        except (TypeError, ValueError, OSError):
+            return None
+
+    def _is_token_expired(self) -> bool:
+        if not self.access_token:
+            return True
+        if not self.token_expires_at:
+            return False
+        # Refresh 2 minutes early to avoid edge-of-expiry request failures.
+        return datetime.now(timezone.utc) >= (self.token_expires_at - timedelta(minutes=2))
+
+    def _ensure_access_token(self):
+        if self._is_token_expired():
+            self._refresh_access_token()
 
     def _refresh_access_token(self):
         url = "https://www.strava.com/oauth/token"
@@ -32,13 +56,19 @@ class StravaClient:
         if res.status_code == 200:
             data = res.json()
             self.access_token = data.get("access_token")
+            self.token_expires_at = self._parse_expiry(data.get("expires_at"))
             app_logger.info("Strava token refresh successful")
             write_token_to_env("STRAVA_ACCESS_TOKEN", self.access_token)
+            if data.get("refresh_token"):
+                write_token_to_env("STRAVA_REFRESH_TOKEN", data["refresh_token"])
+            if data.get("expires_at"):
+                write_token_to_env("STRAVA_TOKEN_EXPIRES_AT", str(data["expires_at"]))
         else:
             app_logger.error(f"Strava token refresh failed: {res.text}")
             raise AuthError(f"Strava token refresh failed: {res.text}")
 
     def _headers(self):
+        self._ensure_access_token()
         return {"Authorization": f"Bearer {self.access_token}"}
 
     @cached(ttl=3600, ignore=('self',))
@@ -47,6 +77,9 @@ class StravaClient:
         url = f"{self.base_url}/athlete/activities"
         params = {"per_page": per_page, "page": page}
         res = requests.get(url, headers=self._headers(), params=params)
+        if res.status_code == 401:
+            self._refresh_access_token()
+            res = requests.get(url, headers=self._headers(), params=params)
         res.raise_for_status()
         return res.json()
 
@@ -55,6 +88,9 @@ class StravaClient:
     def get_activity_detail(self, activity_id):
         url = f"{self.base_url}/activities/{activity_id}"
         res = requests.get(url, headers=self._headers())
+        if res.status_code == 401:
+            self._refresh_access_token()
+            res = requests.get(url, headers=self._headers())
         res.raise_for_status()
         return res.json()
 

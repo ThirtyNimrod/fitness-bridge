@@ -1,3 +1,20 @@
+from src.utils.database import get_workouts
+
+
+def get_rolling_baselines(n_days: int = 30):
+    """Estimate personal HRV/RHR baselines from recent sessions with safe defaults."""
+    rows = get_workouts(n_days=n_days)
+    hrv_values = [float(r.get("hrv_ms")) for r in rows if r.get("hrv_ms") is not None]
+    rhr_values = [float(r.get("resting_hr")) for r in rows if r.get("resting_hr") is not None]
+
+    hrv_baseline = sum(hrv_values) / len(hrv_values) if hrv_values else 45.0
+    rhr_baseline = sum(rhr_values) / len(rhr_values) if rhr_values else 60.0
+    return {
+        "hrv_baseline": hrv_baseline,
+        "resting_hr_baseline": rhr_baseline,
+    }
+
+
 def score_sleep(sleep_data):
     try:
         total_minutes = sleep_data.get("summary", {}).get("totalMinutesAsleep", 0)
@@ -15,13 +32,12 @@ def score_sleep(sleep_data):
     return min(40, round(time_score + efficiency_bonus))
 
 
-def score_hrv(hrv_data):
+def score_hrv(hrv_data, baseline: float = 45.0):
     try:
         hrv_value = hrv_data.get("hrv", [])[0].get("value", {}).get("dailyRmssd")
     except Exception:
         hrv_value = None
         
-    baseline = 45.0  # In a complete app, we'd pull rolling 30-day avg
     if hrv_value is None: 
         return 20
 
@@ -60,11 +76,11 @@ def derive_recommendation(score):
 
 
 def compute_readiness(sleep_data, hrv_data, resting_hr):
+    baselines = get_rolling_baselines(n_days=30)
+
     sleep_score = score_sleep(sleep_data)
-    hrv_score = score_hrv(hrv_data)
-    
-    # Derive from history ideally; hardcoded to 60 for MVP math
-    hr_score = score_resting_hr(resting_hr, baseline_hr=60)
+    hrv_score = score_hrv(hrv_data, baseline=baselines["hrv_baseline"])
+    hr_score = score_resting_hr(resting_hr, baseline_hr=baselines["resting_hr_baseline"])
     
     total = sleep_score + hrv_score + hr_score
     

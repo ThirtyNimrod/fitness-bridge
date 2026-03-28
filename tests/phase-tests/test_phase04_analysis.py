@@ -20,8 +20,10 @@ sys.path.insert(0, BASE_DIR)
 
 from src.analysis.readiness import (
     score_sleep, score_hrv, score_resting_hr,
-    get_readiness_label, derive_recommendation, compute_readiness
+    get_readiness_label, derive_recommendation, compute_readiness,
+    get_rolling_baselines
 )
+import src.analysis.readiness as readiness_module
 from src.analysis.load import (
     compute_weekly_load, compute_acwr, detect_overreach,
     progressive_overload_check
@@ -103,6 +105,33 @@ class TestComputeReadiness:
         assert "recommendation" in result
         assert 0 <= result["score"] <= 100
 
+    def test_compute_readiness_uses_rolling_baseline(self, monkeypatch):
+        monkeypatch.setattr(
+            readiness_module,
+            "get_rolling_baselines",
+            lambda n_days=30: {"hrv_baseline": 100.0, "resting_hr_baseline": 60.0},
+        )
+        sleep = {"summary": {"totalMinutesAsleep": 450, "efficiency": 90}}
+        hrv = {"hrv": [{"value": {"dailyRmssd": 50.0}}]}
+        result = compute_readiness(sleep, hrv, 60)
+        # With baseline=100, HRV ratio is low and should not receive high score.
+        assert result["components"]["hrv"] <= 10
+
+
+class TestRollingBaselines:
+    def test_rolling_baseline_uses_recent_workouts(self, monkeypatch):
+        monkeypatch.setattr(
+            readiness_module,
+            "get_workouts",
+            lambda n_days=30: [
+                {"hrv_ms": 40.0, "resting_hr": 62.0},
+                {"hrv_ms": 50.0, "resting_hr": 58.0},
+            ],
+        )
+        baselines = get_rolling_baselines(30)
+        assert baselines["hrv_baseline"] == pytest.approx(45.0, abs=0.01)
+        assert baselines["resting_hr_baseline"] == pytest.approx(60.0, abs=0.01)
+
 
 # ---------------------------------------------------------------------------
 # Load Tests
@@ -135,6 +164,7 @@ class TestACWR:
         result = compute_acwr(df)
         assert result is not None
         assert result["ratio"] == pytest.approx(1.0, abs=0.05)
+        assert "ratio_raw" in result
         assert result["zone"] == "optimal"
 
     def test_empty_df_returns_none(self):

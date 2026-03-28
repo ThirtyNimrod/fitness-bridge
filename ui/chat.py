@@ -1,5 +1,5 @@
 import streamlit as st
-import json
+import re
 from langchain_core.messages import HumanMessage, AIMessage
 from src.memory.manager import MemoryManager
 from src.guardrails.input_guard import InputGuardrail
@@ -12,6 +12,15 @@ manager = MemoryManager()
 input_guardrail = InputGuardrail()
 output_guardrail = OutputGuardrail()
 
+MAX_CHAT_INPUT_CHARS = 1000
+MAX_RESPONSE_CHARS = 6000
+
+
+def _sanitize_text(value: str, max_len: int) -> str:
+    # Strip control characters while preserving common whitespace.
+    cleaned = re.sub(r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]", "", value or "")
+    return cleaned[:max_len].strip()
+
 @st.cache_resource
 def get_graph():
     return build_graph()
@@ -19,6 +28,10 @@ def get_graph():
 compiled_graph = get_graph()
 
 def run_agent(query, session_id):
+    query = _sanitize_text(query, MAX_CHAT_INPUT_CHARS)
+    if not query:
+        return "Please enter a valid fitness-related question."
+
     # Step 1: Input guardrail
     allowed, reason = input_guardrail.check(query, llm=llm)
     if not allowed:
@@ -49,7 +62,7 @@ def run_agent(query, session_id):
     try:
         # Step 4: Run agent graph
         result = compiled_graph.invoke(initial_state)
-        response_text = result["messages"][-1].content
+        response_text = _sanitize_text(result["messages"][-1].content, MAX_RESPONSE_CHARS)
         tool_data = result.get("tool_data", {})
 
         # Step 5: Output guardrail
@@ -64,7 +77,8 @@ def run_agent(query, session_id):
 
         return response_text
     except Exception as e:
-        return f"An error occurred while generating a response: {str(e)}"
+        ui_logger.exception(f"Chat generation failure for session {session_id}: {e}")
+        return "An internal error occurred while generating your response. Please try again."
 
 def render_chat(session_id):
     history = manager.short_term.get(session_id)
@@ -74,6 +88,11 @@ def render_chat(session_id):
             st.markdown(msg["content"])
 
     if prompt := st.chat_input("Ask about your training..."):
+        prompt = _sanitize_text(prompt, MAX_CHAT_INPUT_CHARS)
+        if not prompt:
+            st.warning("Please enter a valid message.")
+            return
+
         with st.chat_message("user"):
             st.markdown(prompt)
 

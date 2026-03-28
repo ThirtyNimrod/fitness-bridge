@@ -1,10 +1,9 @@
 from langchain_core.messages import SystemMessage
-from langchain_ollama import ChatOllama
-from config import OLLAMA_MODEL, OLLAMA_BASE_URL
+from src.agents.llm import get_llm
 from src.agents.state import AgentState
 from src.agents.tools.readiness_tools import readiness_tools
 
-llm = ChatOllama(model=OLLAMA_MODEL, base_url=OLLAMA_BASE_URL, temperature=0.1)
+llm = get_llm(temperature=0.1)
 
 READINESS_SYSTEM_PROMPT = """
 You are a recovery specialist coach. You analyse biological data to assess
