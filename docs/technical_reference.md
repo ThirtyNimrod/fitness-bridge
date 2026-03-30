@@ -14,8 +14,10 @@ This document is the developer reference for the Fitness Bridge AI codebase. It 
 6. [Analysis Algorithms](#6-analysis-algorithms)
 7. [API Clients](#7-api-clients)
 8. [Agent Layer](#8-agent-layer)
-9. [Configuration Reference](#9-configuration-reference)
-10. [Testing Guide](#10-testing-guide)
+9. [UI Layer](#9-ui-layer) ← NEW
+10. [Sync Engine](#10-sync-engine) ← NEW
+11. [Configuration Reference](#11-configuration-reference)
+12. [Testing Guide](#12-testing-guide)
 
 ---
 
@@ -69,7 +71,7 @@ def my_function(arg):
 
 ### `src/utils/database.py`
 
-All SQLite operations. Two concerns: chat history and semantic memory.
+All SQLite operations. Three concerns: chat history, semantic memory, and workout indexing.
 
 **Schema:**
 
@@ -90,7 +92,28 @@ semantic_facts(
     value TEXT,
     updated_at DATETIME
 )
+
+workouts(
+    id TEXT PK,                    -- Strava activity ID
+    workout_date TEXT,             -- ISO format "2026-03-31"
+    title TEXT,
+    duration_min REAL,
+    total_volume_kg REAL,
+    exercises_raw TEXT,            -- JSON serialised from Hevy parser
+    muscle_groups TEXT,            -- JSON list
+    readiness_score INTEGER,
+    sleep_hours REAL,
+    hrv_ms REAL,
+    synced_at DATETIME,
+    UNIQUE(workout_date, id)
+)
 ```
+
+**Key functions:**
+
+- `upsert_workout(row)` — Idempotent write; safe to re-run
+- `get_workouts_filtered(start_date, end_date, title_query, min_volume, max_volume, limit, offset)` — Server-side filtering for History page
+- `get_workout_dates(n_days)` — Training dates for the last N days (caches with TTL=3600)
 
 > `role="summary"` rows are written by `MemoryManager.maybe_summarise()` and excluded from `get_chat_history()`. They are stored in the same table for simplicity.
 
@@ -303,7 +326,157 @@ pct_change = (last_half_avg - first_half_avg) / first_half_avg * 100
 
 ---
 
-## 7. API Clients
+## 7. UI Layer
+
+Streamlit multipage navigation with five pages. All UI state is persisted in `st.session_state` or database queries. Background sync runs on startup + every 2 hours.
+
+### `app.py` (Entrypoint)
+
+- Calls `run_startup_sync()` (cache resource, runs once per session)
+- Calls `start_background_sync()` (daemon thread, runs every 2 hours)
+- Initialises `session_id` in state before rendering navigation
+- Wires five pages: Dashboard, Coach, History, Settings, Diagnostics
+
+### `ui/dashboard.py` (Training Metrics)
+
+**Layout:**
+
+- 4-column metric cards: ⚡ Readiness, 🏋️ Volume (7d), 📊 ACWR, 🗓️ Sessions
+- Two-column last workout: left=exercise list (using `format_set()` helper), right=summary card
+- Chart framing with `st.container(border=True)`
+
+**Rendering helpers:**
+
+- `_acwr_delta_color(zone)` → Maps zone to Streamlit delta_color (normal/inverse/off)
+- `_render_metric_card(label, value, delta, delta_color)` → Bordered metric with delta
+- `_render_last_workout_summary(last)` → Right-column summary with duration, volume, intensity
+
+**Dependencies:** `format_set()` from `ui/shared.py`; readiness/ACWR from analysis layer.
+
+### `ui/pages/coach.py` (AI Chat)
+
+**Layout:**
+
+- Full-width session selector (no columns)
+- Caption below showing active session title
+- Divider before chat body
+- "+New Chat" button creates session and reruns page
+
+**Chat rendering:** Uses `ui/chat.py` for streaming message display.
+
+**State:** Session ID persists in `st.session_state`; messages fetched from database.
+
+### `ui/pages/history.py` (Workout Browser)
+
+**Filters (collapsible sidebar):**
+
+- Date range picker (start/end date)
+- Title search box (case-insensitive LIKE)
+- Volume range sliders (min/max kg)
+- Muscle group multiselect (client-side filtering from JSON)
+
+**Server-side filtering:**
+
+Calls `get_workouts_filtered()` with `st.cache_data(ttl=60)`. WHERE clauses for date, title, volume.
+
+**Client-side filtering:**
+
+After server query, `_filter_by_muscle_groups()` removes workouts not matching selected groups.
+
+**Pagination:**
+
+- PAGE_SIZE = 10
+- Offset stored in `st.session_state.history_page`
+- Filter signature detection resets pagination when filters change (avoids off-by-one)
+
+**Summary metrics:**
+
+- Total count, volume sum, avg readiness, display count
+
+**Workout cards:**
+
+Expanders showing title, date, volume, exercises. Uses `_render_workout_card()` with nested exercise details via `format_set()`.
+
+### `ui/pages/settings.py` (Credentials & Controls)
+
+**Sections:**
+
+- Connection status lights (Strava ✓/✗, Fitbit ✓/✗) via `get_connection_statuses()`
+- "Sync Now" button → calls `run_sync_with_lock(force=True)`, clears cache, reruns
+- "Clear Cache" button → clears diskcache, reruns
+- ℹ️ Help text for token refresh and troubleshooting
+
+### `ui/pages/diagnostics.py` (Observability)
+
+**Router metrics display:**
+
+- Total Routed (counter)
+- Heuristic Hits (counter)
+- LLM Fallbacks (counter)
+- Heuristic Rate % (calculated as heuristic_hits / total_routed)
+
+Calls `get_routing_metrics()` from `src.agents.router` (thread-safe dict access).
+
+**Sync health:**
+
+Fetches last sync timestamps for Strava and Fitbit from database. Shows in readable format ("2 hours ago").
+
+**Reset button:**
+
+Calls `reset_routing_metrics()`, reruns page. Useful for seeing metrics over a specific period.
+
+### `ui/shared.py` (Reusable Helpers)
+
+**Formatting:**
+
+- `format_set(set_data)` — Renders exercise set based on type (duration/weighted/bodyweight) with optional tags (e.g., "[Failure]")
+- `parse_json_list(raw_value)` — Safely deserialises JSON with fallback to empty list
+
+**Sync helpers:**
+
+- `run_sync_with_lock(force)` — Thread-safe sync dispatch; clears cache if force=True
+- `start_background_sync()` — Daemon thread, runs every 2 hours
+- `run_startup_sync()` — Cache resource, runs once per Streamlit session
+- `get_connection_statuses()` — Returns Strava/Fitbit health with error capture
+
+---
+
+## 8. Sync Engine
+
+`src/sync/engine.py` is the source of truth for workout ingestion and upsert.
+
+**Key responsibilities:**
+
+1. **Fetch from APIs** → Strava activities + Fitbit daily data
+2. **Parse Hevy** → Extract exercises, sets, volumes from descriptions
+3. **Enrich** → Attach readiness scores, sleep, HRV for each date
+4. **Upsert** → Write to SQLite with conflict resolution (Strava ID is UNIQUE)
+5. **Lock** → Thread-safe via `_sync_lock` to prevent concurrent runs
+
+**Workflow:**
+
+```python
+engine.sync(force_api_refresh=False)
+  ├── Check lock (skip if sync already running)
+  ├── If force_api_refresh: clear diskcache
+  ├── Fetch Strava activities (1h cache, wrapped)
+  ├── Fetch Fitbit data (1h cache, wrapped)
+  ├── For each activity:
+  │   ├── Parse Hevy description → exercises
+  │   ├── Lookup Fitbit data for that date
+  │   ├── Compute readiness score
+  │   ├── Upsert to workouts table
+  ├── Release lock
+  └── Return sync summary (count, errors)
+```
+
+**Idempotency:**
+
+Repeated calls to `sync()` are safe. Workouts are matched by Strava activity ID; duplicates silently overwrite.
+
+---
+
+## 9. API Clients
 
 ### Strava
 
@@ -320,7 +493,7 @@ pct_change = (last_half_avg - first_half_avg) / first_half_avg * 100
 
 ---
 
-## 8. Agent Layer
+## 8. Agent Layer (LangGraph Router + Specialists)
 
 ### Router
 
@@ -348,7 +521,7 @@ A subclass of LangGraph's `ToolNode` that parses tool return values and writes t
 
 ---
 
-## 9. Configuration Reference
+## 11. Configuration Reference
 
 All values in `config.py`. Override by setting in `.env`.
 
@@ -370,34 +543,96 @@ All values in `config.py`. Override by setting in `.env`.
 
 ---
 
-## 10. Testing Guide
+## 12. Testing Guide
 
 ### Running all tests
 
+**Ordered mode (stops on first failure):**
+```bash
+python run_tests.py
+```
+
+**Pytest directly:**
 ```bash
 pytest
 ```
 
-### Running specific suites
+### Running specific phases
 
 ```bash
-pytest tests/test_environment.py   # Check packages + .env + file structure
-pytest tests/test_phase1.py        # DB + cache unit tests
-pytest tests/test_phase3.py        # Hevy parser unit tests
-pytest tests/test_phase4.py        # Analysis algorithm tests
-pytest tests/test_phase5.py        # Memory + guardrail tests
-pytest tests/test_phase6.py        # LangGraph compilation + tool definition checks
+pytest tests/phase-tests/test_phase00_environment.py   # Environment + packages
+pytest tests/phase-tests/test_phase01_foundation.py    # DB + cache
+pytest tests/phase-tests/test_phase03_parsers.py       # Hevy parser
+pytest tests/phase-tests/test_phase04_analysis.py      # Readiness + ACWR + load
+pytest tests/phase-tests/test_phase05_sync_engine.py   # Sync + memory
+pytest tests/phase-tests/test_phase06_memory_guardrails.py  # Guardrails
+pytest tests/phase-tests/test_phase07_agents.py        # LangGraph agents
+pytest tests/phase-tests/test_phase08_ui_*.py -v       # UI page tests
 ```
+
+### Phase00–08 Test Structure
+
+| Phase | Scope | Pattern | Count |
+|---|---|---|---|
+| **00** | Environment (packages, .env, paths, file structure) | Assertions on sys checks | 3 tests |
+| **01** | Database init, cache lifecycle, file operations | tmp_path + fresh_db fixture | 3 tests |
+| **02** | Strava + Fitbit API clients (token refresh, retries) | Manual only* | — |
+| **03** | Hevy plaintext parser (set extraction, muscle mapping) | Parameterised inputs | 4 tests |
+| **04** | Analysis algorithms (readiness, ACWR, load, progressive overload) | Pure Python assertions | 7 tests |
+| **05** | Sync engine upsert, memory (short/long/semantic), guardrails | tmp_path + monkeypatch | 5 tests |
+| **06** | Input/output guardrails (safety checks, edge cases) | Mock LLM calls | 3 tests |
+| **07** | LangGraph router, agent tools, state binding | Router mock, tool invocation | 5 tests |
+| **08** | UI pages (dashboard, coach, history, settings, diagnostics) | Streamlit AppTest, 10s timeout | 14 tests |
+
+*Phase 02 requires live credentials; see `test_phase02_clients_and_tokens.py` comments for manual setup.
+
+### Phase08 UI Testing (AppTest)
+
+**Framework:** Streamlit `AppTest` with 10-second default timeout (accommodates LangGraph graph compilation).
+
+**Test files:**
+
+- `test_phase08_ui_dashboard.py` — Empty state (no workouts), data state (with workouts), chart expanders rendered
+- `test_phase08_ui_coach.py` — Page loads, session creation flow, session picker shows correct options
+- `test_phase08_ui_history.py` — Empty state, title filtering, pagination offset increments, filter signature reset
+- `test_phase08_ui_settings.py` — Page loads, sync button dispatch (mocked), cache clear dispatch (mocked)
+- `test_phase08_ui_diagnostics.py` — Metrics display (Total, Heuristic, Fallbacks), reset button dispatch
+
+**Fixtures (conftest.py):**
+
+- `fresh_db(tmp_path, monkeypatch)` — Creates ephemeral SQLite database, patches `config.DB_PATH`, clears diskcache per test
+- `workout_factory()` — Returns callable to create seeded workouts with field overrides
+- `workout_batch_factory(workout_factory)` — Returns callable to create N workouts spanning multiple dates
+
+**Test isolation:**
+
+All tests run with isolated databases. No test pollution. Each test starts clean.
 
 ### Test isolation strategy
 
-Phase 1 and Phase 5 tests use a `tmp_path` fixture to create an ephemeral SQLite database per test, ensuring no test pollutes another's state. The cache is cleared in cache tests via `get_cache().clear()`.
+Phase 00, 01, 05, 07 use `tmp_path` + `monkeypatch` to create ephemeral SQLite databases per test, ensuring no state leaks.
 
-Phase 2 (API clients) requires live credentials. Manual testing is recommended via `python test_phase2.py`. There are no automated Phase 2 tests to avoid CI dependency on real API tokens.
+Phase 04 (algorithms) and Phase 03 (parser) use pure Python with no I/O; no isolation needed.
+
+Phase 02 (API clients) requires live credentials. Manual testing is recommended. There are no automated Phase 02 tests to avoid CI dependency on real API tokens.
 
 ### Adding more tests
 
 All test files follow the same pattern:
-1. `BASE_DIR` is inserted into `sys.path` at the top
-2. Tests are grouped into classes prefixed `Test`
-3. Fixtures live in the same file or in `conftest.py` for shared fixtures
+
+1. Import `sys`, `pathlib`, and set `BASE_DIR` at top
+2. `sys.path.insert(0, str(BASE_DIR))` for relative imports
+3. Tests are grouped into classes prefixed `Test`
+4. Fixtures live in `conftest.py` for sharing; test-local fixtures in the same file
+5. Use `@pytest.mark.skip(reason="...")` for manual tests (Phase 02, credential-dependent)
+6. Use `fresh_db` fixture for any database-touching test
+
+### Running with LangSmith Instrumentation
+
+Optional: Enable LangSmith tracing by setting `LANGSMITH_API_KEY` in `.env`.
+
+```bash
+export LANGSMITH_API_KEY=<your-key>
+pytest tests/phase-tests/test_phase07_agents.py -v
+# Traces appear in https://smith.langchain.com
+```

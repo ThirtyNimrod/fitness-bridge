@@ -336,6 +336,56 @@ def get_workouts(n_days: int = 30) -> list:
         rows = cursor.fetchall()
     return [dict(r) for r in rows]
 
+
+def get_workouts_filtered(
+    start_date: str | None = None,
+    end_date: str | None = None,
+    title_query: str | None = None,
+    min_volume: float | None = None,
+    max_volume: float | None = None,
+    limit: int | None = None,
+    offset: int = 0,
+) -> list:
+    """Return workouts filtered by date, title, and volume, newest first."""
+    clauses = []
+    params: list[object] = []
+
+    if start_date:
+        clauses.append("date >= ?")
+        params.append(start_date)
+    if end_date:
+        clauses.append("date <= ?")
+        params.append(end_date)
+    if title_query:
+        clauses.append("LOWER(COALESCE(workout_title, '')) LIKE ?")
+        params.append(f"%{title_query.strip().lower()}%")
+    if min_volume is not None:
+        clauses.append("COALESCE(total_volume_kg, 0) >= ?")
+        params.append(float(min_volume))
+    if max_volume is not None:
+        clauses.append("COALESCE(total_volume_kg, 0) <= ?")
+        params.append(float(max_volume))
+
+    where_clause = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    limit_clause = ""
+    if limit is not None:
+        limit_clause = " LIMIT ? OFFSET ?"
+        params.extend([int(limit), max(0, int(offset))])
+
+    sql = f"""
+        SELECT * FROM workouts
+        {where_clause}
+        ORDER BY date DESC, synced_at DESC
+        {limit_clause}
+    """
+
+    with get_connection() as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute(sql, params)
+        rows = cursor.fetchall()
+    return [dict(r) for r in rows]
+
 def get_workout_by_date(date_str: str):
     """Return a single workout row for a specific date, or None."""
     with get_connection() as conn:

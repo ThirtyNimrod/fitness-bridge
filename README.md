@@ -71,8 +71,9 @@ Response → Streamlit UI
 | API retries | `tenacity` — exponential backoff |
 | Data | `pandas` |
 | Validation | `pydantic` |
-| UI | `streamlit` |
-| DB | `sqlite3` — chat history + semantic memory |
+| UI | `streamlit` 1.41.1 — multipage, caching, AppTest |
+| DB | `sqlite3` — chat history, semantic memory, workout indexing |
+| Testing | `pytest` 9.0.2 + `langsmith` instrumentation |
 
 ---
 
@@ -140,7 +141,14 @@ streamlit run app.py
 ### 5. Run the test suite
 
 ```bash
+# Run all phases in order (stops on first failure)
+python run_tests.py
+
+# Or run pytest directly
 pytest
+
+# Run a specific phase
+pytest tests/phase-tests/test_phase08_ui_dashboard.py -v
 ```
 
 ---
@@ -167,7 +175,7 @@ Hevy exports workout data into the Strava activity **description** field as plai
 
 ```
 fitness-bridge/
-├── app.py                  # Streamlit entrypoint
+├── app.py                  # Streamlit entrypoint, multipage navigation
 ├── config.py               # All constants and env loading
 ├── requirements.txt
 ├── scripts/
@@ -178,13 +186,115 @@ fitness-bridge/
 │   ├── analysis/           # Pure Python scoring algorithms
 │   ├── memory/             # Three-tier memory system
 │   ├── guardrails/         # Input + output validation
-│   └── agents/             # LangGraph agents + tools
+│   ├── agents/             # LangGraph router + specialists
+│   ├── sync/               # Background sync engine + ingestion
+│   └── utils/              # Database, cache, logging, tokens
 ├── ui/
-│   ├── dashboard.py        # Training overview tab
-│   └── chat.py             # AI coach chat tab
-├── tests/                  # pytest test suite
+│   ├── chat.py             # Message rendering + streaming
+│   ├── dashboard.py        # Training metrics & visual design
+│   ├── shared.py           # Reusable helpers (format_set, sync)
+│   └── pages/
+│       ├── coach.py        # AI coach session selector
+│       ├── history.py      # Workout browser + filters
+│       ├── settings.py     # Credentials & sync controls
+│       └── diagnostics.py  # Router metrics & sync health
+├── tests/
+│   ├── conftest.py         # Fixtures + DB isolation
+│   └── phase-tests/        # Phase00–08 pytest suites
 └── docs/                   # Technical documentation
 ```
+
+---
+
+## UI Architecture
+
+### Multipage Navigation
+
+**app.py** wires five pages with shared session state and background sync:
+
+| Page | Purpose | Key Features |
+|---|---|---|
+| **Dashboard** | Training overview | ⚡ Readiness, 🏋️ Volume, 📊 ACWR, 🗓️ Sessions; last workout split view |
+| **Coach** | AI chat agent | Session picker, streaming responses, message history |
+| **History** | Workout browser | Date/title/volume filters, muscle-group selector, pagination, exercise details |
+| **Settings** | Credentials & controls | Manual sync, cache clear, connection status lights |
+| **Diagnostics** | Observability | Router metrics (heuristic hit rate), last sync timestamps, reset button |
+
+### Visual Design Principles
+
+- **Bordered containers** for metric cards (`st.container(border=True)`)
+- **Icons + colour coding** for readiness zones (green=ready, yellow=caution, red=overtrained)
+- **Two-column splits** for space efficiency (e.g., last workout: left=exercises, right=summary)
+- **Expanders** for collapsible details (workouts, settings)
+- **Server-side filtering** for performance (SQL WHERE clauses); client-side for JSON columns
+
+### Database Filtering
+
+`src/utils/database.py` now includes `get_workouts_filtered()` for the History page:
+
+```python
+def get_workouts_filtered(
+    start_date: str,      # ISO format "2026-03-01"
+    end_date: str,        # ISO format "2026-03-31"
+    title_query: str,     # Case-insensitive LIKE match
+    min_volume: float,    # kg threshold
+    max_volume: float,    # kg threshold
+    limit: int,           # Page size (default 10)
+    offset: int           # Pagination offset
+) -> List[dict]:
+```
+
+- **Server-side filtering**: Date range, title LIKE, volume thresholds
+- **Client-side filtering**: Muscle groups (extracted from JSON)
+- **Pagination**: Tracked in `st.session_state.history_page` with filter signature reset
+
+---
+
+## Sync Engine
+
+`src/sync/engine.py` handles background and manual workout ingestion:
+
+- **Idempotent upsert**: Workouts matched by Strava activity ID; duplicates are safe
+- **Hevy parsing**: Extracts exercises, sets, volume from task descriptions
+- **Data enrichment**: Attaches readiness score, sleep, HRV for each date
+- **Background daemon**: Runs every 2 hours; respects sync lock to avoid overlap
+- **Cache bypass**: Manual sync clears diskcache to force fresh API data
+
+---
+
+## Testing: Phase00–08
+
+**Test Strategy**: Ordered phase execution with test isolation fixtures.
+
+| Phase | Scope | Count |
+|---|---|---|
+| **00** | Environment (packages, .env, paths) | 3 tests |
+| **01** | Foundation (database init, cache) | 3 tests |
+| **02** | API clients (Strava, Fitbit) | Manual only* |
+| **03** | Hevy parser (structured set extraction) | 4 tests |
+| **04** | Analysis algorithms (readiness, ACWR, load) | 7 tests |
+| **05** | Sync engine + memory system | 5 tests |
+| **06** | Guardrails (input/output validation) | 3 tests |
+| **07** | LangGraph agents (router + tools) | 5 tests |
+| **08** | UI pages (Streamlit AppTest) | 14 tests |
+
+*Phase 02 requires live credentials; see `test_phase02_clients_and_tokens.py` for manual flow.
+
+**Phase08 UI Tests** use `AppTest` with 10-second timeouts to accommodate LangGraph compilation:
+
+- `test_phase08_ui_dashboard.py` — Empty state, data state, expander presence
+- `test_phase08_ui_coach.py` — Page load, session creation, session picker options
+- `test_phase08_ui_history.py` — Filter workflows, pagination, expander interaction
+- `test_phase08_ui_settings.py` — Sync dispatch, cache clear dispatch
+- `test_phase08_ui_diagnostics.py` — Metrics display, reset button dispatch
+
+**Test Fixtures** (conftest.py):
+
+- `fresh_db(tmp_path)` — Ephemeral temp database per test, auto-cleanup
+- `workout_factory()` — Seeded workout generator with field overrides
+- `workout_batch_factory()` — Creates N workouts spanning multiple dates
+
+All fixtures ensure test isolation; no test pollution across runs.
 
 ---
 

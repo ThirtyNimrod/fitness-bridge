@@ -42,6 +42,7 @@ Thumbs.db
 # === Logs ===
 logs/
 tests/testing-logs/
+log_debug.txt
 
 # === Ollama / model artifacts ===
 *.gguf
