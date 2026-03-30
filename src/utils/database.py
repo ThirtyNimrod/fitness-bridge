@@ -5,9 +5,13 @@ from datetime import datetime
 from config import DB_PATH, SHORT_TERM_WINDOW
 
 SCHEMA_VERSION = 2
+DB_BUSY_TIMEOUT_MS = int(os.getenv("DB_BUSY_TIMEOUT_MS", "5000"))
 
 def get_connection():
-    return sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=max(1.0, DB_BUSY_TIMEOUT_MS / 1000.0))
+    conn.execute(f"PRAGMA busy_timeout = {max(1000, DB_BUSY_TIMEOUT_MS)}")
+    conn.execute("PRAGMA foreign_keys = ON")
+    return conn
 
 
 def _set_schema_version(conn, version: int):
@@ -102,6 +106,8 @@ def _run_migrations(conn):
 def init_db():
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     with get_connection() as conn:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
         cursor = conn.cursor()
         
         # Sessions Table
@@ -353,12 +359,26 @@ def get_last_synced(source: str):
             return None
     return None
 
-def set_last_synced(source: str):
-    """Upsert sync timestamp to now for the given source."""
+def set_last_synced(source: str, synced_at: datetime | None = None):
+    """Upsert sync timestamp for the given source.
+
+    If synced_at is None, stores CURRENT_TIMESTAMP. Otherwise stores the provided
+    datetime in UTC ISO format to align watermark semantics with ingested data.
+    """
     with get_connection() as conn:
-        conn.execute("""
-            INSERT INTO sync_meta (source, last_synced_at)
-            VALUES (?, CURRENT_TIMESTAMP)
-            ON CONFLICT(source) DO UPDATE SET last_synced_at=CURRENT_TIMESTAMP
-        """, (source,))
+        if synced_at is None:
+            conn.execute("""
+                INSERT INTO sync_meta (source, last_synced_at)
+                VALUES (?, CURRENT_TIMESTAMP)
+                ON CONFLICT(source) DO UPDATE SET last_synced_at=CURRENT_TIMESTAMP
+            """, (source,))
+        else:
+            if synced_at.tzinfo is None:
+                synced_at = synced_at.replace(tzinfo=datetime.UTC)
+            synced_at_str = synced_at.astimezone(datetime.UTC).isoformat()
+            conn.execute("""
+                INSERT INTO sync_meta (source, last_synced_at)
+                VALUES (?, ?)
+                ON CONFLICT(source) DO UPDATE SET last_synced_at=excluded.last_synced_at
+            """, (source, synced_at_str))
         conn.commit()

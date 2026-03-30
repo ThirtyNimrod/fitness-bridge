@@ -8,6 +8,7 @@ class AgentState(TypedDict):
     messages: Annotated[list[BaseMessage], add_messages]
     session_id: str
     intent: Optional[IntentType]
+    tool_iterations: int
     system_context: str
     tool_data: dict
     final_response: Optional[str]

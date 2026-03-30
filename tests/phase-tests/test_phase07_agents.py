@@ -12,6 +12,8 @@ import sys
 import pytest
 import json
 from unittest.mock import patch, MagicMock
+from langgraph.graph import END
+from langchain_core.messages import AIMessage, AIMessageChunk
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, BASE_DIR)
@@ -49,7 +51,7 @@ class TestAgentState:
     def test_state_typeddict_has_required_keys(self):
         from src.agents.state import AgentState
         keys = AgentState.__annotations__.keys()
-        for required in ["messages", "session_id", "intent", "system_context", "tool_data"]:
+        for required in ["messages", "session_id", "intent", "tool_iterations", "system_context", "tool_data"]:
             assert required in keys, f"AgentState is missing key: {required}"
 
     def test_intent_type_is_correct(self):
@@ -96,6 +98,206 @@ class TestSharedLLM:
         llm_a = get_llm(temperature=0.1)
         llm_b = get_llm(temperature=0.1)
         assert llm_a is llm_b
+
+
+class TestRouterLoopGuard:
+    def test_route_tools_stops_after_max_loops(self):
+        from src.agents import router
+
+        state = {
+            "messages": [AIMessage(content="tool", tool_calls=[{"name": "x", "args": {}, "id": "1"}])],
+            "tool_iterations": router.MAX_TOOL_LOOPS,
+        }
+        decision = router.route_tools(state)
+        assert decision == END
+
+    def test_route_after_tools_stops_after_max_loops(self):
+        from src.agents import router
+
+        state = {"intent": "coach", "tool_iterations": router.MAX_TOOL_LOOPS}
+        decision = router.route_after_tools(state)
+        assert decision == END
+
+    def test_intercepting_tool_node_increments_tool_iterations(self):
+        from src.agents.router import InterceptingToolNode
+
+        node = InterceptingToolNode([])
+        with patch('src.agents.router.ToolNode.invoke', return_value={"messages": []}):
+            result = node.invoke({"tool_iterations": 2, "tool_data": {}})
+        assert result["tool_iterations"] == 3
+
+
+class TestRouterHeuristics:
+    def test_heuristic_intent_detects_readiness(self):
+        from src.agents.router import _heuristic_intent
+
+        intent = _heuristic_intent("Should I train today? My sleep and HRV are low")
+        assert intent == "readiness"
+
+    def test_heuristic_intent_detects_progress(self):
+        from src.agents.router import _heuristic_intent
+
+        intent = _heuristic_intent("Show my workout history and volume trend")
+        assert intent == "progress"
+
+    def test_heuristic_intent_returns_none_when_ambiguous(self):
+        from src.agents.router import _heuristic_intent
+
+        intent = _heuristic_intent("How is my progress and what should I change")
+        assert intent is None
+
+    def test_router_node_uses_heuristic_without_llm_call(self):
+        from src.agents import router
+
+        state = {"messages": [AIMessage(content="Hi")], "tool_iterations": 0}
+        llm_mock = MagicMock()
+        with patch('src.agents.router.llm', llm_mock):
+            result = router.router_node(state)
+
+        assert result["intent"] == "general"
+        assert result["tool_iterations"] == 0
+        llm_mock.invoke.assert_not_called()
+
+
+class TestRoutingMetrics:
+    def setup_method(self):
+        from src.agents.router import reset_routing_metrics
+        reset_routing_metrics()
+
+    def test_heuristic_hit_increments_counters(self):
+        from src.agents.router import router_node, get_routing_metrics
+
+        state = {"messages": [AIMessage(content="Hi")], "tool_iterations": 0}
+        router_node(state)
+        m = get_routing_metrics()
+        assert m["total_routed"] == 1
+        assert m["heuristic_hits"] == 1
+        assert m["llm_fallbacks"] == 0
+
+    def test_llm_fallback_increments_counters(self):
+        from src.agents import router
+
+        llm_mock = MagicMock()
+        llm_mock.invoke.return_value = MagicMock(content="coach")
+        # Ambiguous query so heuristic returns None → LLM fallback
+        state = {
+            "messages": [AIMessage(content="How do I balance stress and training loads")],
+            "tool_iterations": 0,
+        }
+        with patch("src.agents.router.llm", llm_mock):
+            router.router_node(state)
+        m = router.get_routing_metrics()
+        assert m["total_routed"] == 1
+        assert m["llm_fallbacks"] == 1
+        assert m["heuristic_hits"] == 0
+
+    def test_reset_clears_counters(self):
+        from src.agents.router import router_node, get_routing_metrics, reset_routing_metrics
+
+        state = {"messages": [AIMessage(content="Hi")], "tool_iterations": 0}
+        router_node(state)
+        assert get_routing_metrics()["total_routed"] == 1
+        reset_routing_metrics()
+        m = get_routing_metrics()
+        assert m["total_routed"] == 0
+        assert m["heuristic_hits"] == 0
+        assert m["llm_fallbacks"] == 0
+
+    def test_multiple_calls_accumulate(self):
+        from src.agents.router import router_node, get_routing_metrics
+
+        # "Hi" → general (heuristic hit)
+        state = {"messages": [AIMessage(content="Hi")], "tool_iterations": 0}
+        router_node(state)
+        router_node(state)
+        m = get_routing_metrics()
+        assert m["total_routed"] == 2
+        assert m["heuristic_hits"] == 2
+
+    def test_get_routing_metrics_returns_copy(self):
+        from src.agents.router import get_routing_metrics
+
+        m1 = get_routing_metrics()
+        m1["total_routed"] = 999
+        m2 = get_routing_metrics()
+        assert m2["total_routed"] == 0  # original dict unchanged
+
+
+class TestChatStreaming:
+    def test_stream_agent_streams_tokens_and_uses_values_snapshot(self):
+        import ui.chat as chat_module
+
+        placeholder = MagicMock()
+        manager_mock = MagicMock()
+        manager_mock.build_context.return_value = {
+            "recent_messages": [],
+            "system_context": "ctx",
+        }
+
+        # Simulate mixed stream events from LangGraph multi-mode streaming.
+        streamed_events = [
+            (
+                "messages",
+                (AIMessageChunk(content="Hello"), {"langgraph_node": "coach_agent"}),
+            ),
+            (
+                "messages",
+                (AIMessageChunk(content=" world"), {"langgraph_node": "coach_agent"}),
+            ),
+            (
+                "values",
+                {
+                    "messages": [AIMessage(content="Hello world")],
+                    "tool_data": {"score": 42},
+                },
+            ),
+        ]
+
+        graph_mock = MagicMock()
+        graph_mock.stream.return_value = iter(streamed_events)
+
+        with patch.object(chat_module, "manager", manager_mock), \
+             patch.object(chat_module, "compiled_graph", graph_mock), \
+             patch.object(chat_module.input_guardrail, "check", return_value=(True, "ok")), \
+             patch.object(chat_module.output_guardrail, "validate_response", return_value=(True, "")):
+            response = chat_module.stream_agent("Plan my week", "s1", placeholder)
+
+        assert response == "Hello world"
+        assert placeholder.markdown.call_count >= 2
+        graph_mock.invoke.assert_not_called()
+        manager_mock.save_turn.assert_called_once_with("s1", "Plan my week", "Hello world")
+
+    def test_stream_agent_falls_back_to_invoke_when_values_missing(self):
+        import ui.chat as chat_module
+
+        placeholder = MagicMock()
+        manager_mock = MagicMock()
+        manager_mock.build_context.return_value = {
+            "recent_messages": [],
+            "system_context": "ctx",
+        }
+
+        graph_mock = MagicMock()
+        graph_mock.stream.return_value = iter([
+            (
+                "messages",
+                (AIMessageChunk(content="No snapshot"), {"langgraph_node": "coach_agent"}),
+            )
+        ])
+        graph_mock.invoke.return_value = {
+            "messages": [AIMessage(content="Fallback final")],
+            "tool_data": {"k": "v"},
+        }
+
+        with patch.object(chat_module, "manager", manager_mock), \
+             patch.object(chat_module, "compiled_graph", graph_mock), \
+             patch.object(chat_module.input_guardrail, "check", return_value=(True, "ok")), \
+             patch.object(chat_module.output_guardrail, "validate_response", return_value=(True, "")):
+            response = chat_module.stream_agent("Plan", "s2", placeholder)
+
+        assert response == "No snapshot"
+        graph_mock.invoke.assert_called_once()
+        manager_mock.save_turn.assert_called_once_with("s2", "Plan", "No snapshot")
 
 
 class TestDeterministicIntegration:

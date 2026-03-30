@@ -150,6 +150,28 @@ class TestMemoryManager:
         facts = manager.semantic.get_all()
         assert len(facts["goal"]) == 256
 
+    def test_should_extract_facts_every_third_assistant_turn(self):
+        from src.utils.database import create_session
+        sid = create_session("Throttle Test")
+        manager = MemoryManager()
+
+        manager.save_turn(sid, "u1", "a1")
+        assert manager.should_extract_facts(sid, every_n=3) is False
+
+        manager.save_turn(sid, "u2", "a2")
+        assert manager.should_extract_facts(sid, every_n=3) is False
+
+        manager.save_turn(sid, "u3", "a3")
+        assert manager.should_extract_facts(sid, every_n=3) is True
+
+    def test_should_extract_facts_defaults_to_safe_interval(self):
+        from src.utils.database import create_session
+        sid = create_session("Throttle Default")
+        manager = MemoryManager()
+
+        manager.save_turn(sid, "u1", "a1")
+        assert manager.should_extract_facts(sid, every_n=0) is True
+
 
 # ---------------------------------------------------------------------------
 # Input Guardrail Tests

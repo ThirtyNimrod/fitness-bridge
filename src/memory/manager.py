@@ -5,6 +5,7 @@ import re
 
 MAX_FACTS_PER_RESPONSE = 20
 FACT_KEY_PATTERN = re.compile(r"^[a-zA-Z0-9_\- ]{1,64}$")
+FACT_EXTRACTION_EVERY_N_ASSISTANT_TURNS = 3
 
 class MemoryManager:
     def __init__(self):
@@ -53,6 +54,15 @@ class MemoryManager:
         
         new_summary = llm.invoke(prompt).content
         self.long_term.save(session_id, new_summary)
+
+    def should_extract_facts(self, session_id, every_n: int = FACT_EXTRACTION_EVERY_N_ASSISTANT_TURNS) -> bool:
+        """Throttle fact extraction to every N assistant turns to reduce extra LLM calls."""
+        safe_n = max(1, int(every_n))
+        history = database.get_full_history(session_id)
+        assistant_turns = sum(1 for msg in history if msg.get("role") == "assistant")
+        if assistant_turns == 0:
+            return False
+        return assistant_turns % safe_n == 0
         
     def extract_and_store_facts(self, assistant_response, llm):
         prompt = f"""

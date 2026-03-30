@@ -122,6 +122,16 @@ class TestDatabase:
             version = conn.execute("PRAGMA user_version").fetchone()[0]
         assert version >= 2
 
+    def test_wal_mode_enabled(self):
+        with get_connection() as conn:
+            mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+        assert str(mode).lower() == "wal"
+
+    def test_busy_timeout_configured(self):
+        with get_connection() as conn:
+            timeout_ms = conn.execute("PRAGMA busy_timeout").fetchone()[0]
+        assert int(timeout_ms) >= 1000
+
     def test_validate_workout_record_rejects_negative_values(self):
         bad = {
             "activity_id": "1",

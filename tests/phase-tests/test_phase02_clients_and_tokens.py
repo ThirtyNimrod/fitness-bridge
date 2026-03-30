@@ -83,7 +83,12 @@ class TestAPIClients:
     def test_strava_client_does_not_refresh_when_token_not_expired(self):
         """Valid non-expired token should skip refresh on init."""
         future_epoch = int((datetime.now(timezone.utc) + timedelta(hours=1)).timestamp())
-        with patch("src.clients.strava_client.STRAVA_ACCESS_TOKEN", "token"), \
+        with patch.dict(os.environ, {
+                "STRAVA_ACCESS_TOKEN": "token",
+                "STRAVA_TOKEN_EXPIRES_AT": str(future_epoch),
+                "STRAVA_REFRESH_TOKEN": "refresh-token",
+            }, clear=False), \
+             patch("src.clients.strava_client.STRAVA_ACCESS_TOKEN", "token"), \
              patch("src.clients.strava_client.STRAVA_TOKEN_EXPIRES_AT", str(future_epoch)), \
              patch.object(StravaClient, "_refresh_access_token") as mock_refresh:
             StravaClient()
@@ -92,7 +97,12 @@ class TestAPIClients:
     def test_fitbit_client_refreshes_when_expired(self):
         """Expired token should trigger refresh during Fitbit client initialization."""
         expired_epoch = int((datetime.now(timezone.utc) - timedelta(hours=1)).timestamp())
-        with patch("src.clients.fitbit_client.FITBIT_ACCESS_TOKEN", "token"), \
+        with patch.dict(os.environ, {
+                "FITBIT_ACCESS_TOKEN": "token",
+                "FITBIT_TOKEN_EXPIRES_AT": str(expired_epoch),
+                "FITBIT_REFRESH_TOKEN": "refresh-token",
+            }, clear=False), \
+             patch("src.clients.fitbit_client.FITBIT_ACCESS_TOKEN", "token"), \
              patch("src.clients.fitbit_client.FITBIT_TOKEN_EXPIRES_AT", str(expired_epoch)), \
              patch.object(FitbitClient, "_refresh_access_token") as mock_refresh:
             FitbitClient()
@@ -128,3 +138,41 @@ class TestAPIClients:
                 assert isinstance(hrv, dict)
         except Exception as e:
             pytest.skip(f"Live Fitbit connection skipped/failed during test: {e}")
+
+    def test_strava_client_ensure_access_token_reloads_runtime_env(self, monkeypatch):
+        """Client should pick up newer env token state without process restart."""
+        monkeypatch.setenv("STRAVA_ACCESS_TOKEN", "token_a")
+        future_epoch = int((datetime.now(timezone.utc) + timedelta(hours=1)).timestamp())
+        monkeypatch.setenv("STRAVA_TOKEN_EXPIRES_AT", str(future_epoch))
+        monkeypatch.setenv("STRAVA_REFRESH_TOKEN", "refresh_a")
+
+        with patch.object(StravaClient, "_refresh_access_token") as mock_refresh:
+            client = StravaClient()
+            assert client.access_token == "token_a"
+            mock_refresh.assert_not_called()
+
+            monkeypatch.setenv("STRAVA_ACCESS_TOKEN", "token_b")
+            monkeypatch.setenv("STRAVA_REFRESH_TOKEN", "refresh_b")
+            client._ensure_access_token()
+
+            assert client.access_token == "token_b"
+            assert client.refresh_token == "refresh_b"
+
+    def test_fitbit_client_headers_reloads_runtime_env(self, monkeypatch):
+        """Headers path should re-check expiry and pick up latest env token values."""
+        monkeypatch.setenv("FITBIT_ACCESS_TOKEN", "fit_a")
+        future_epoch = int((datetime.now(timezone.utc) + timedelta(hours=1)).timestamp())
+        monkeypatch.setenv("FITBIT_TOKEN_EXPIRES_AT", str(future_epoch))
+        monkeypatch.setenv("FITBIT_REFRESH_TOKEN", "fit_refresh_a")
+
+        with patch.object(FitbitClient, "_refresh_access_token") as mock_refresh:
+            client = FitbitClient()
+            assert client.access_token == "fit_a"
+            mock_refresh.assert_not_called()
+
+            monkeypatch.setenv("FITBIT_ACCESS_TOKEN", "fit_b")
+            monkeypatch.setenv("FITBIT_REFRESH_TOKEN", "fit_refresh_b")
+            headers = client._headers()
+
+            assert headers["Authorization"] == "Bearer fit_b"
+            assert client.refresh_token == "fit_refresh_b"

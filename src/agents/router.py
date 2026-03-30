@@ -1,4 +1,6 @@
 import json
+import os
+import threading
 from langgraph.graph import StateGraph, END
 from langgraph.prebuilt import ToolNode
 from langchain_core.messages import ToolMessage
@@ -13,6 +15,42 @@ from src.agents.tools.progress_tools import progress_tools
 from src.agents.tools.coach_tools import coach_tools
 
 llm = get_llm(temperature=0.0)
+MAX_TOOL_LOOPS = max(1, int(os.getenv("AGENT_MAX_TOOL_LOOPS", "5")))
+
+# ── Routing metrics ───────────────────────────────────────────────────────────
+_metrics_lock = threading.Lock()
+_routing_metrics: dict[str, int] = {
+    "heuristic_hits": 0,
+    "llm_fallbacks": 0,
+    "total_routed": 0,
+}
+
+
+def get_routing_metrics() -> dict:
+    """Return a snapshot of routing counter values (thread-safe copy)."""
+    with _metrics_lock:
+        return dict(_routing_metrics)
+
+
+def reset_routing_metrics() -> None:
+    """Reset all routing counters to zero (useful for testing)."""
+    with _metrics_lock:
+        for k in _routing_metrics:
+            _routing_metrics[k] = 0
+
+_READINESS_HINTS = {
+    "readiness", "recover", "recovery", "sleep", "hrv", "resting hr", "resting heart",
+    "fatigue", "tired", "train today", "should i train", "deload",
+}
+_PROGRESS_HINTS = {
+    "progress", "trend", "history", "volume", "acwr", "workout history", "past workouts",
+    "exercise progress", "plateau", "stagnat",
+}
+_COACH_HINTS = {
+    "coach", "advice", "improve", "plan", "program", "what should i do", "recommend",
+    "increase", "reduce", "change",
+}
+_GENERAL_HINTS = {"hello", "hi", "hey", "thanks", "thank you"}
 
 ROUTER_PROMPT = """
 You are a routing classifier for a fitness coaching app.
@@ -30,12 +68,54 @@ Respond with only the category name. Nothing else.
 
 def router_node(state: AgentState):
     query = state["messages"][-1].content
-    intent_str = llm.invoke(ROUTER_PROMPT.format(query=query)).content.strip().lower()
+
+    intent_str = _heuristic_intent(query)
+    with _metrics_lock:
+        _routing_metrics["total_routed"] += 1
+        if intent_str is None:
+            _routing_metrics["llm_fallbacks"] += 1
+        else:
+            _routing_metrics["heuristic_hits"] += 1
+
+    if intent_str is None:
+        intent_str = llm.invoke(ROUTER_PROMPT.format(query=query)).content.strip().lower()
 
     if intent_str not in ["readiness", "progress", "coach", "general"]:
         intent_str = "general"
 
-    return {"intent": intent_str}
+    return {"intent": intent_str, "tool_iterations": 0}
+
+
+def _heuristic_intent(query: str):
+    """Fast deterministic routing for common intents; returns None if ambiguous."""
+    text = (query or "").strip().lower()
+    if not text:
+        return "general"
+
+    # Keep short conversational messages away from unnecessary router LLM calls.
+    if len(text.split()) <= 3 and any(token in text for token in _GENERAL_HINTS):
+        return "general"
+
+    readiness_hits = sum(1 for hint in _READINESS_HINTS if hint in text)
+    progress_hits = sum(1 for hint in _PROGRESS_HINTS if hint in text)
+    coach_hits = sum(1 for hint in _COACH_HINTS if hint in text)
+
+    scores = {
+        "readiness": readiness_hits,
+        "progress": progress_hits,
+        "coach": coach_hits,
+    }
+    top_intent = max(scores, key=scores.get)
+    top_score = scores[top_intent]
+
+    if top_score == 0:
+        return None
+
+    # If two categories tie at the same confidence, fall back to LLM classifier.
+    if list(scores.values()).count(top_score) > 1:
+        return None
+
+    return top_intent
 
 def route_to_agent(state: AgentState):
     intent = state.get("intent", "general")
@@ -48,12 +128,18 @@ def route_to_agent(state: AgentState):
     return mapping.get(intent, "coach_agent")
 
 def route_tools(state: AgentState):
+    if int(state.get("tool_iterations", 0)) >= MAX_TOOL_LOOPS:
+        return END
+
     last_message = state["messages"][-1]
     if getattr(last_message, "tool_calls", None):
         return "tools"
     return END
 
 def route_after_tools(state: AgentState):
+    if int(state.get("tool_iterations", 0)) >= MAX_TOOL_LOOPS:
+        return END
+
     intent = state.get("intent", "general")
     mapping = {
         "readiness": "readiness_agent",
@@ -66,6 +152,10 @@ def route_after_tools(state: AgentState):
 class InterceptingToolNode(ToolNode):
     def invoke(self, input, config=None, **kwargs):
         result = super().invoke(input, config=config, **kwargs)
+        prior_iterations = 0
+        if isinstance(input, dict):
+            prior_iterations = int(input.get("tool_iterations", 0) or 0)
+        result["tool_iterations"] = prior_iterations + 1
         
         new_data = {}
         if "messages" in result:
@@ -113,7 +203,8 @@ def build_graph():
     graph.add_conditional_edges("tools", route_after_tools, {
         "readiness_agent": "readiness_agent",
         "progress_agent":  "progress_agent",
-        "coach_agent":     "coach_agent"
+        "coach_agent":     "coach_agent",
+        END: END,
     })
 
     return graph.compile()

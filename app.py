@@ -21,13 +21,19 @@ from ui.dashboard import render_dashboard
 from ui.chat import render_chat
 
 init_db()
+_sync_lock = threading.Lock()
+
+
+def run_sync_with_lock(force: bool = False):
+    with _sync_lock:
+        return SyncEngine().sync(force=force)
 
 # ── Background 2-hour auto-sync ───────────────────────────────────────────────
 def _background_sync_loop():
     while True:
         time.sleep(2 * 60 * 60)   # 2 hours
         try:
-            SyncEngine().sync()
+            run_sync_with_lock(force=False)
         except Exception as e:
             app_logger.warning(f"Background sync failed: {e}")
 
@@ -41,7 +47,7 @@ def start_background_sync():
 @st.cache_resource
 def run_startup_sync():
     try:
-        result = SyncEngine().sync()
+        result = run_sync_with_lock(force=False)
         app_logger.info(f"Startup sync: {result['synced']} new workouts")
     except Exception as e:
         app_logger.warning(f"Startup sync failed: {e}")
@@ -105,7 +111,7 @@ with st.sidebar:
     if st.button("🔄 Sync Workouts", use_container_width=True):
         with st.spinner("Syncing..."):
             try:
-                result = SyncEngine().sync(force=True)
+                result = run_sync_with_lock(force=True)
                 get_connection_statuses.clear()
                 st.success(f"Synced {result['synced']} workouts.")
                 st.rerun()

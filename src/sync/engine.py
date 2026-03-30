@@ -99,7 +99,9 @@ class SyncEngine:
 
         app_logger.info(f"Sync: {len(new_activities)} new activities to process")
 
+        synced = 0
         errors = 0
+        latest_synced_activity_dt = None
         for activity, date in new_activities:
             try:
                 sleep_data = safe_fetch(self.fitbit.get_sleep, date)
@@ -118,6 +120,12 @@ class SyncEngine:
                 record = build_session_record(detail or activity, exercises, readiness)
                 validated = validate_workout_record(record)
                 upsert_workout(validated)
+                synced += 1
+
+                activity_dt = _parse_activity_timestamp(activity.get("start_date_local", ""))
+                if activity_dt is not None:
+                    if latest_synced_activity_dt is None or activity_dt > latest_synced_activity_dt:
+                        latest_synced_activity_dt = activity_dt
             except ValueError as e:
                 errors += 1
                 app_logger.warning(
@@ -129,9 +137,11 @@ class SyncEngine:
                     f"Sync error for activity {activity.get('id')}: {e}"
                 )
 
-        set_last_synced("strava")
+        if synced > 0:
+            set_last_synced("strava", latest_synced_activity_dt)
+
         result = {
-            "synced": len(new_activities),
+            "synced": synced,
             "errors": errors,
             "last_synced_at": datetime.now(timezone.utc),
         }
