@@ -6,6 +6,7 @@ from src.guardrails.input_guard import InputGuardrail
 from src.guardrails.output_guard import OutputGuardrail
 from src.agents.router import build_graph, llm
 from src.agents.state import AgentState
+from src.utils.database import rename_session, get_full_history
 from src.utils.logger import ui_logger
 
 manager = MemoryManager()
@@ -22,6 +23,33 @@ _AGENT_NODES = {"readiness_agent", "progress_agent", "coach_agent"}
 def _sanitize_text(value: str, max_len: int) -> str:
     cleaned = re.sub(r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]", "", value or "")
     return cleaned[:max_len].strip()
+
+
+def _generate_chat_title(user_message: str, assistant_response: str) -> str:
+    """Generate a 3-5 word chat title from the first exchange."""
+    try:
+        prompt = (
+            "Generate a concise 3-5 word title for this fitness chat. "
+            "Return only the title, no quotes or punctuation.\n\n"
+            f"User: {user_message[:200]}\n"
+            f"Assistant: {assistant_response[:200]}"
+        )
+        result = llm.invoke(prompt)
+        title = result.content.strip().strip('"\'')[:50]
+        return title if title else "Chat"
+    except Exception:
+        return "Chat"
+
+
+def _maybe_auto_title(session_id: str, user_message: str, response_text: str):
+    """Auto-title a session after the first exchange if title is still default."""
+    history = get_full_history(session_id)
+    # Only auto-title on the very first assistant response
+    assistant_count = sum(1 for m in history if m.get("role") == "assistant")
+    if assistant_count <= 1:
+        title = _generate_chat_title(user_message, response_text)
+        if title and title != "Chat":
+            rename_session(session_id, title)
 
 
 @st.cache_resource
@@ -44,6 +72,7 @@ def _build_initial_state(query: str, session_id: str) -> AgentState:
         messages=lc_messages,
         session_id=session_id,
         intent=None,
+        routed_to=None,
         tool_iterations=0,
         system_context=context["system_context"],
         tool_data={},
@@ -68,6 +97,11 @@ def run_agent(query: str, session_id: str) -> str:
         response_text = _sanitize_text(result["messages"][-1].content, MAX_RESPONSE_CHARS)
         tool_data = result.get("tool_data", {})
 
+        # Store routing info for UI display
+        routed_to = result.get("routed_to")
+        if routed_to:
+            st.session_state["last_routed_to"] = routed_to
+
         valid, issue = output_guardrail.validate_response(response_text, tool_data)
         if not valid:
             ui_logger.warning(f"[GUARDRAIL WARNING] {issue}")
@@ -76,6 +110,8 @@ def run_agent(query: str, session_id: str) -> str:
         manager.maybe_summarise(session_id, llm)
         if manager.should_extract_facts(session_id):
             manager.extract_and_store_facts(response_text, llm)
+
+        _maybe_auto_title(session_id, query, response_text)
 
         return response_text
     except Exception as e:
@@ -135,6 +171,11 @@ def stream_agent(query: str, session_id: str, placeholder):
 
         final_tool_data = final_state.get("tool_data", {})
 
+        # Store routing info for UI display
+        routed_to = final_state.get("routed_to")
+        if routed_to:
+            st.session_state["last_routed_to"] = routed_to
+
         # If streaming produced no tokens (e.g. tool-only response), fall back to
         # the full response from the final state.
         if not accumulated.strip():
@@ -151,6 +192,8 @@ def stream_agent(query: str, session_id: str, placeholder):
         manager.maybe_summarise(session_id, llm)
         if manager.should_extract_facts(session_id):
             manager.extract_and_store_facts(response_text, llm)
+
+        _maybe_auto_title(session_id, query, response_text)
 
         return response_text
 
@@ -187,4 +230,7 @@ def render_chat(session_id):
             placeholder = st.empty()
             with st.spinner("Analyzing..."):
                 stream_agent(prompt, session_id, placeholder)
+            routed_to = st.session_state.get("last_routed_to")
+            if routed_to:
+                st.caption(f"Routed to: {routed_to}")
             st.rerun()

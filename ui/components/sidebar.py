@@ -4,9 +4,10 @@ from src.utils.database import get_last_synced
 from ui.shared import get_connection_statuses
 
 
-def _status_label(name: str, connected: bool) -> str:
-    icon = "🟢" if connected else "🔴"
-    return f"{icon} {name}"
+def _status_pill(name: str, connected: bool) -> str:
+    css_class = "status-connected" if connected else "status-disconnected"
+    label = "Connected" if connected else "Not connected"
+    return f'<span class="status-pill {css_class}">{label}</span>'
 
 
 def render_sidebar():
@@ -14,10 +15,10 @@ def render_sidebar():
     last_sync = get_last_synced("strava")
 
     with st.sidebar:
-        st.header("Fitness Bridge")
+        st.header("🏋️ Fitness Bridge")
         st.caption("Status")
-        st.write(_status_label("Strava", statuses["strava"]["connected"]))
-        st.write(_status_label("Fitbit", statuses["fitbit"]["connected"]))
+        st.markdown(f"**Strava** {_status_pill('Strava', statuses['strava']['connected'])}", unsafe_allow_html=True)
+        st.markdown(f"**Fitbit** {_status_pill('Fitbit', statuses['fitbit']['connected'])}", unsafe_allow_html=True)
         st.divider()
 
         if last_sync:

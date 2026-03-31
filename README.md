@@ -58,6 +58,7 @@ Response → Streamlit UI
 1. **Algorithms own the analysis. LLM owns the narration.** No business logic inside prompts.
 2. **Cache aggressively at the edges.** All API calls are wrapped with a 1-hour diskcache TTL.
 3. **Each agent has one job.** The Router classifies; specialists handle completely.
+4. **Multi-source, single schema.** Strava and Fitbit workouts coexist with a composite key `(source, activity_id)`.
 
 ---
 
@@ -65,7 +66,7 @@ Response → Streamlit UI
 
 | Concern | Library |
 |---|---|
-| LLM | `ollama` + `langchain-ollama` (Qwen2.5:4b, local) |
+| LLM | `ollama` + `langchain-ollama` (Qwen3.5:4b, local) |
 | Orchestration | `langgraph` — stateful agent graphs |
 | API caching | `diskcache` — persistent, TTL-aware |
 | API retries | `tenacity` — exponential backoff |
@@ -83,7 +84,8 @@ Response → Streamlit UI
 |---|---|
 | **Strava** | Activity metadata, workout title |
 | **Hevy** (via Strava description) | Exercise names, sets, reps, weights |
-| **Fitbit** | Sleep duration, efficiency, HRV (RMSSD), resting heart rate |
+| **Fitbit Biometrics** | Sleep duration, efficiency, HRV (RMSSD), resting heart rate |
+| **Fitbit Activities** (Pixel Watch) | Tracked workouts — Badminton, Walk, Treadmill, Strength Training, Weightlifting, etc. with duration, calories, HR zones, distance |
 
 ---
 
@@ -128,7 +130,7 @@ cp .env.example .env
 ### 3. Start Ollama
 
 ```bash
-ollama pull qwen2.5:4b
+ollama pull qwen3.5:4b
 ollama serve
 ```
 
@@ -183,21 +185,26 @@ fitness-bridge/
 ├── src/
 │   ├── clients/            # Strava + Fitbit API wrappers
 │   ├── parsers/            # Hevy plaintext → structured data
-│   ├── analysis/           # Pure Python scoring algorithms
+│   ├── analysis/           # Pure Python scoring + strength analytics
+│   │   ├── strength.py     # 1RM estimation, PR detection, muscle volume
+│   │   ├── load.py         # ACWR, deload detection, overreach
+│   │   ├── readiness.py    # Readiness scoring
+│   │   └── dataset.py      # Multi-source dataset builder
 │   ├── memory/             # Three-tier memory system
 │   ├── guardrails/         # Input + output validation
 │   ├── agents/             # LangGraph router + specialists
-│   ├── sync/               # Background sync engine + ingestion
+│   ├── sync/               # Multi-source sync engine (Strava + Fitbit)
 │   └── utils/              # Database, cache, logging, tokens
 ├── ui/
-│   ├── chat.py             # Message rendering + streaming
-│   ├── dashboard.py        # Training metrics & visual design
+│   ├── chat.py             # Message rendering + streaming + auto-titling
+│   ├── dashboard.py        # Training metrics, heatmap, charts
 │   ├── shared.py           # Reusable helpers (format_set, sync)
+│   ├── styles.py           # Custom CSS injection
 │   └── pages/
-│       ├── coach.py        # AI coach session selector
-│       ├── history.py      # Workout browser + filters
-│       ├── settings.py     # Credentials & sync controls
-│       └── diagnostics.py  # Router metrics & sync health
+│       ├── coach.py        # AI coach + session management (rename/delete)
+│       ├── history.py      # Workout browser + multi-source filters
+│       ├── settings.py     # Credentials, sync controls, fact management
+│       └── diagnostics.py  # Router metrics, sync health, API quota
 ├── tests/
 │   ├── conftest.py         # Fixtures + DB isolation
 │   └── phase-tests/        # Phase00–08 pytest suites
@@ -214,17 +221,20 @@ fitness-bridge/
 
 | Page | Purpose | Key Features |
 |---|---|---|
-| **Dashboard** | Training overview | ⚡ Readiness, 🏋️ Volume, 📊 ACWR, 🗓️ Sessions; last workout split view |
-| **Coach** | AI chat agent | Session picker, streaming responses, message history |
-| **History** | Workout browser | Date/title/volume filters, muscle-group selector, pagination, exercise details |
-| **Settings** | Credentials & controls | Manual sync, cache clear, connection status lights |
-| **Diagnostics** | Observability | Router metrics (heuristic hit rate), last sync timestamps, reset button |
+| **Dashboard** | Training overview | ⚡ Readiness, 🏋️ Volume, 📊 ACWR, 🗓️ Sessions; time range toggle (7d/14d/30d/90d); calendar heatmap; HR zone + calorie + muscle volume charts |
+| **Coach** | AI chat agent | Session picker, streaming responses, message history; rename (✏️) and delete (🗑️) sessions; dynamic auto-titling; routing visibility |
+| **History** | Workout browser | Date/title/volume filters, source filter (Strava/Fitbit), muscle-group selector, pagination; source badges (🟠/🔵) |
+| **Settings** | Credentials & controls | Manual sync, cache clear, connection status pills; semantic fact management (view/edit/delete) |
+| **Diagnostics** | Observability | Router metrics, Strava API quota usage, sync health for Strava + Fitbit activities |
 
 ### Visual Design Principles
 
-- **Bordered containers** for metric cards (`st.container(border=True)`)
+- **Custom CSS** injected via `ui/styles.py` — chat bubbles, metric card gradients, status pills, source badges
+- **Bordered containers** for metric cards (`st.container(border=True)`) with gradient backgrounds
 - **Icons + colour coding** for readiness zones (green=ready, yellow=caution, red=overtrained)
 - **Two-column splits** for space efficiency (e.g., last workout: left=exercises, right=summary)
+- **Source badges** — 🟠 Strava / 🔵 Fitbit on workouts in History and Dashboard
+- **Status pills** in sidebar (styled with CSS instead of emoji dots)
 - **Expanders** for collapsible details (workouts, settings)
 - **Server-side filtering** for performance (SQL WHERE clauses); client-side for JSON columns
 
@@ -252,13 +262,23 @@ def get_workouts_filtered(
 
 ## Sync Engine
 
-`src/sync/engine.py` handles background and manual workout ingestion:
+`src/sync/engine.py` handles background and manual workout ingestion from **two sources**:
 
-- **Idempotent upsert**: Workouts matched by Strava activity ID; duplicates are safe
-- **Hevy parsing**: Extracts exercises, sets, volume from task descriptions
+### Strava Sync
+- **Idempotent upsert**: Workouts matched by `(source='strava', activity_id)`
+- **Hevy parsing**: Extracts exercises, sets, volume from activity descriptions
 - **Data enrichment**: Attaches readiness score, sleep, HRV for each date
-- **Background daemon**: Runs every 2 hours; respects sync lock to avoid overlap
+
+### Fitbit Activity Sync
+- Fetches tracked workouts from Pixel Watch 2 via `GET /1/user/-/activities/list.json`
+- Maps Fitbit `activityTypeId` codes to categories: `strength`, `cardio`, `sport`, `walking`, `running`, `flexibility`, `other`
+- Stores duration, calories, HR zones, distance alongside workout record
+- Workouts keyed by `(source='fitbit', activity_id)` — no collision with Strava
+
+### Common
+- **Background daemon**: Runs every 2 hours (configurable via `BACKGROUND_SYNC_INTERVAL`); respects sync lock to avoid overlap
 - **Cache bypass**: Manual sync clears diskcache to force fresh API data
+- **Multi-source schema**: Composite primary key `(source, activity_id)` supports both sources in one table
 
 ---
 
@@ -298,11 +318,39 @@ All fixtures ensure test isolation; no test pollution across runs.
 
 ---
 
+## Analysis Capabilities
+
+### Strength Analytics (`src/analysis/strength.py`)
+- **1RM Estimation** — Epley formula (`weight × (1 + reps / 30)`) from Hevy exercise data
+- **Personal Record Detection** — Scans all exercises to find max estimated 1RM and max session volume
+- **Progressive Overload Tracking** — Compares last 3 vs. first 3 instances of an exercise; classifies as progressing/maintaining/regressing
+- **Muscle Group Volume** — Maps exercises to muscle groups and aggregates weekly volume per group
+
+### Load & Recovery (`src/analysis/load.py`)
+- **ACWR** — Acute:Chronic Workload Ratio with zone classification
+- **Deload Detection** — Flags weeks where volume dropped >30% from the prior week
+- **Overreach Detection** — Warns when weekly volume exceeds baseline threshold
+
+---
+
+## Chat Management
+
+- **Dynamic auto-titling**: After the first assistant response, the LLM generates a 3–5 word session title
+- **Rename**: ✏️ button next to session picker to rename any session
+- **Delete**: 🗑️ button with confirmation dialog — cascade deletes all messages
+- **Session picker**: Shows dynamic titles with `format_func`
+
+---
+
 ## Future Roadmap
 
 - OAuth UI flow for token refresh (currently manual via `.env`)
 - Vector search over session history for semantic queries
 - Nutrition integration (MyFitnessPal / Cronometer)
+- Training plan generator
+- Exercise substitution engine
+- Weekly digest / notification system
+- Dark/light theme toggle
 - Android port — Flutter frontend + FastAPI backend + Gemini Nano
 
 ---

@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta, timezone
 import os
+import threading
 
 import requests
 from tenacity import retry, wait_exponential, stop_after_attempt
@@ -14,6 +15,47 @@ from config import (
     STRAVA_REFRESH_TOKEN,
     STRAVA_TOKEN_EXPIRES_AT,
 )
+
+# ── Strava API Quota Tracker ────────────────────────────────────────────────
+# Strava limits: 100 requests / 15 min, 1000 / day
+_quota_lock = threading.Lock()
+_quota_state = {
+    "15min_count": 0,
+    "15min_window_start": None,
+    "daily_count": 0,
+    "daily_window_start": None,
+}
+
+STRAVA_15MIN_LIMIT = 100
+STRAVA_DAILY_LIMIT = 1000
+
+
+def _track_api_call():
+    """Increment API call counters and log warnings near limits."""
+    now = datetime.now(timezone.utc)
+    with _quota_lock:
+        # 15-min window
+        if _quota_state["15min_window_start"] is None or (now - _quota_state["15min_window_start"]) > timedelta(minutes=15):
+            _quota_state["15min_count"] = 0
+            _quota_state["15min_window_start"] = now
+        _quota_state["15min_count"] += 1
+
+        # Daily window
+        if _quota_state["daily_window_start"] is None or (now - _quota_state["daily_window_start"]) > timedelta(hours=24):
+            _quota_state["daily_count"] = 0
+            _quota_state["daily_window_start"] = now
+        _quota_state["daily_count"] += 1
+
+        if _quota_state["15min_count"] >= STRAVA_15MIN_LIMIT * 0.8:
+            app_logger.warning(f"Strava quota: {_quota_state['15min_count']}/{STRAVA_15MIN_LIMIT} requests in 15-min window")
+        if _quota_state["daily_count"] >= STRAVA_DAILY_LIMIT * 0.8:
+            app_logger.warning(f"Strava quota: {_quota_state['daily_count']}/{STRAVA_DAILY_LIMIT} daily requests")
+
+
+def get_strava_quota() -> dict:
+    """Return current quota usage snapshot."""
+    with _quota_lock:
+        return dict(_quota_state)
 
 class AuthError(Exception):
     pass
@@ -96,11 +138,13 @@ class StravaClient:
     @cached(ttl=3600, ignore=('self',))
     @retry(wait=wait_exponential(multiplier=1, min=2, max=10), stop=stop_after_attempt(3), reraise=True)
     def get_activities(self, per_page=10, page=1):
+        _track_api_call()
         url = f"{self.base_url}/athlete/activities"
         params = {"per_page": per_page, "page": page}
         res = requests.get(url, headers=self._headers(), params=params)
         if res.status_code == 401:
             self._refresh_access_token()
+            _track_api_call()
             res = requests.get(url, headers=self._headers(), params=params)
         res.raise_for_status()
         return res.json()
@@ -108,10 +152,12 @@ class StravaClient:
     @cached(ttl=3600, ignore=('self',))
     @retry(wait=wait_exponential(multiplier=1, min=2, max=10), stop=stop_after_attempt(3), reraise=True)
     def get_activity_detail(self, activity_id):
+        _track_api_call()
         url = f"{self.base_url}/activities/{activity_id}"
         res = requests.get(url, headers=self._headers())
         if res.status_code == 401:
             self._refresh_access_token()
+            _track_api_call()
             res = requests.get(url, headers=self._headers())
         res.raise_for_status()
         return res.json()

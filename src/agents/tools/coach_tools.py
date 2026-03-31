@@ -1,7 +1,7 @@
 from langchain_core.tools import tool
 from datetime import date
 import json
-from src.analysis.load import compute_weekly_load, compute_acwr, detect_overreach
+from src.analysis.load import compute_weekly_load, compute_acwr, detect_overreach, detect_deload_weeks
 from src.analysis.dataset import build_dataset
 from src.utils.database import get_workout_by_date
 from src.utils.cache import cached
@@ -57,5 +57,20 @@ def get_full_context():
     today = date.today().isoformat()
     return json.dumps(_build_full_context_payload(today))
 
-coach_tools = [get_full_context]
+@tool
+def check_deload_status():
+    """
+    Checks if any recent weeks were deload weeks (volume dropped >30%).
+    Useful for understanding recovery phases and training periodisation.
+    """
+    df = build_dataset(n_days=60)
+    if df.empty:
+        return json.dumps({"deloads": [], "message": "No data available."})
+    deloads = detect_deload_weeks(df)
+    return json.dumps({
+        "deloads": deloads,
+        "message": f"Found {len(deloads)} deload week(s) in the last 60 days." if deloads else "No deload weeks detected.",
+    })
+
+coach_tools = [get_full_context, check_deload_status]
 

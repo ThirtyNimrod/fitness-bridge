@@ -10,6 +10,7 @@ def _prepare_sessions_df(sessions_df):
     df['duration_min'] = pd.to_numeric(df.get('duration_min', 0), errors='coerce').fillna(0.0)
     return df.dropna(subset=['date_obj'])
 
+
 def compute_weekly_load(sessions_df):
     if sessions_df.empty:
         return {"total_volume_kg": 0, "total_duration_min": 0, "session_count": 0, "avg_volume_per_session": 0}
@@ -29,6 +30,38 @@ def compute_weekly_load(sessions_df):
         "session_count": count,
         "avg_volume_per_session": float(this_week['total_volume_kg'].mean()) if count > 0 else 0
     }
+
+
+def detect_deload_weeks(sessions_df: pd.DataFrame) -> list[dict]:
+    """Flag weeks where volume dropped >30% from the prior week.
+
+    Returns list of dicts: {week, volume, prev_volume, drop_pct}
+    """
+    if sessions_df.empty:
+        return []
+
+    df = _prepare_sessions_df(sessions_df)
+    if df.empty:
+        return []
+
+    df["iso_week"] = pd.to_datetime(df["date"]).dt.strftime("%G-W%V")
+    weekly = df.groupby("iso_week")["total_volume_kg"].sum().sort_index()
+
+    deloads = []
+    prev_vol = None
+    for week, vol in weekly.items():
+        if prev_vol is not None and prev_vol > 0:
+            drop_pct = round((prev_vol - vol) / prev_vol * 100, 1)
+            if drop_pct > 30:
+                deloads.append({
+                    "week": week,
+                    "volume": round(vol, 1),
+                    "prev_volume": round(prev_vol, 1),
+                    "drop_pct": drop_pct,
+                })
+        prev_vol = vol
+
+    return deloads
 
 def compute_acwr(sessions_df):
     if sessions_df.empty: 

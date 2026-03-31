@@ -8,6 +8,7 @@ from src.clients.fitbit_client import FitbitClient
 from src.clients.strava_client import StravaClient
 from src.sync.engine import SyncEngine
 from src.utils.logger import app_logger
+from config import BACKGROUND_SYNC_INTERVAL
 
 _sync_lock = threading.Lock()
 
@@ -19,7 +20,7 @@ def run_sync_with_lock(force: bool = False):
 
 def _background_sync_loop():
     while True:
-        time.sleep(2 * 60 * 60)
+        time.sleep(BACKGROUND_SYNC_INTERVAL)
         try:
             run_sync_with_lock(force=False)
         except Exception as exc:

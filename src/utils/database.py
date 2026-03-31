@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from config import DB_PATH, SHORT_TERM_WINDOW
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 DB_BUSY_TIMEOUT_MS = int(os.getenv("DB_BUSY_TIMEOUT_MS", "5000"))
 
 def get_connection():
@@ -93,14 +93,77 @@ def _migrate_workouts_table_with_constraints(conn):
     conn.execute('ALTER TABLE workouts_v2 RENAME TO workouts')
 
 
+def _migrate_workouts_v2_to_v3(conn):
+    """Rebuild workouts with source, workout_type, calories, hr_zones, distance_km columns
+    and a composite unique key on (source, activity_id)."""
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS workouts_v3 (
+            activity_id      TEXT NOT NULL,
+            source           TEXT NOT NULL DEFAULT 'strava',
+            workout_type     TEXT,
+            date             TEXT NOT NULL CHECK (length(date) = 10),
+            workout_title    TEXT,
+            duration_min     REAL CHECK (duration_min IS NULL OR duration_min >= 0),
+            total_volume_kg  REAL CHECK (total_volume_kg IS NULL OR total_volume_kg >= 0),
+            exercise_count   INTEGER CHECK (exercise_count IS NULL OR exercise_count >= 0),
+            set_count        INTEGER CHECK (set_count IS NULL OR set_count >= 0),
+            exercises_raw    TEXT,
+            muscle_groups    TEXT,
+            has_drop_sets    INTEGER CHECK (has_drop_sets IN (0, 1)),
+            has_failure_sets INTEGER CHECK (has_failure_sets IN (0, 1)),
+            sleep_hours      REAL CHECK (sleep_hours IS NULL OR sleep_hours >= 0),
+            sleep_efficiency REAL CHECK (sleep_efficiency IS NULL OR (sleep_efficiency >= 0 AND sleep_efficiency <= 100)),
+            hrv_ms           REAL CHECK (hrv_ms IS NULL OR hrv_ms >= 0),
+            resting_hr       REAL CHECK (resting_hr IS NULL OR resting_hr >= 0),
+            readiness_score  REAL CHECK (readiness_score IS NULL OR (readiness_score >= 0 AND readiness_score <= 100)),
+            readiness_label  TEXT,
+            calories         REAL CHECK (calories IS NULL OR calories >= 0),
+            hr_zones         TEXT,
+            distance_km      REAL CHECK (distance_km IS NULL OR distance_km >= 0),
+            synced_at        DATETIME DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (source, activity_id)
+        )
+    ''')
+
+    conn.execute('''
+        INSERT OR REPLACE INTO workouts_v3 (
+            activity_id, source, workout_type, date, workout_title, duration_min,
+            total_volume_kg, exercise_count, set_count,
+            exercises_raw, muscle_groups, has_drop_sets, has_failure_sets,
+            sleep_hours, sleep_efficiency, hrv_ms, resting_hr,
+            readiness_score, readiness_label, synced_at
+        )
+        SELECT
+            activity_id, 'strava', NULL, date, workout_title, duration_min,
+            total_volume_kg, exercise_count, set_count,
+            exercises_raw, muscle_groups, has_drop_sets, has_failure_sets,
+            sleep_hours, sleep_efficiency, hrv_ms, resting_hr,
+            readiness_score, readiness_label,
+            COALESCE(synced_at, CURRENT_TIMESTAMP)
+        FROM workouts
+        WHERE activity_id IS NOT NULL
+          AND date IS NOT NULL
+          AND length(date) = 10
+    ''')
+
+    conn.execute('DROP TABLE workouts')
+    conn.execute('ALTER TABLE workouts_v3 RENAME TO workouts')
+    conn.execute('CREATE INDEX IF NOT EXISTS idx_workouts_date ON workouts(date)')
+    conn.execute('CREATE INDEX IF NOT EXISTS idx_workouts_source ON workouts(source)')
+
+
 def _run_migrations(conn):
     current = _get_schema_version(conn)
     if current < 2:
-        # Workouts table exists from v1 but lacked hard constraints.
         tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         if "workouts" in tables:
             _migrate_workouts_table_with_constraints(conn)
         _set_schema_version(conn, 2)
+    if current < 3:
+        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if "workouts" in tables:
+            _migrate_workouts_v2_to_v3(conn)
+        _set_schema_version(conn, 3)
 
 
 def init_db():
@@ -140,10 +203,12 @@ def init_db():
                 updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )
         ''')
-        # Workouts cache table
+        # Workouts cache table (v3: multi-source with composite PK)
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS workouts (
-                activity_id      TEXT PRIMARY KEY,
+                activity_id      TEXT NOT NULL,
+                source           TEXT NOT NULL DEFAULT 'strava',
+                workout_type     TEXT,
                 date             TEXT NOT NULL CHECK (length(date) = 10),
                 workout_title    TEXT,
                 duration_min     REAL CHECK (duration_min IS NULL OR duration_min >= 0),
@@ -160,9 +225,16 @@ def init_db():
                 resting_hr       REAL CHECK (resting_hr IS NULL OR resting_hr >= 0),
                 readiness_score  REAL CHECK (readiness_score IS NULL OR (readiness_score >= 0 AND readiness_score <= 100)),
                 readiness_label  TEXT,
-                synced_at        DATETIME DEFAULT CURRENT_TIMESTAMP
+                calories         REAL CHECK (calories IS NULL OR calories >= 0),
+                hr_zones         TEXT,
+                distance_km      REAL CHECK (distance_km IS NULL OR distance_km >= 0),
+                synced_at        DATETIME DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (source, activity_id)
             )
         ''')
+
+        # Indexes (messages — safe before migration)
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id)')
 
         # Sync metadata table
         cursor.execute('''
@@ -173,6 +245,10 @@ def init_db():
         ''')
 
         _run_migrations(conn)
+
+        # Workout indexes — created after migrations so the source column exists
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_workouts_date ON workouts(date)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_workouts_source ON workouts(source)')
 
         conn.commit()
 
@@ -194,7 +270,18 @@ def validate_workout_record(record: dict) -> dict:
     cleaned["activity_id"] = activity_id
     cleaned["date"] = date_value
 
-    for key in ["duration_min", "total_volume_kg", "sleep_hours", "sleep_efficiency", "hrv_ms", "resting_hr", "readiness_score"]:
+    # Source defaults to strava for backwards compatibility
+    source = str(cleaned.get("source") or "strava").strip().lower()
+    if source not in ("strava", "fitbit"):
+        source = "strava"
+    cleaned["source"] = source
+
+    # workout_type is freeform but optional
+    if cleaned.get("workout_type"):
+        cleaned["workout_type"] = str(cleaned["workout_type"]).strip()[:50]
+
+    for key in ["duration_min", "total_volume_kg", "sleep_hours", "sleep_efficiency",
+                "hrv_ms", "resting_hr", "readiness_score", "calories", "distance_km"]:
         if cleaned.get(key) is None:
             continue
         cleaned[key] = float(cleaned[key])
@@ -230,6 +317,24 @@ def create_session(title="New Session"):
         conn.execute('INSERT INTO sessions (id, title) VALUES (?, ?)', (session_id, title))
         conn.commit()
     return session_id
+
+def delete_session(session_id: str) -> bool:
+    """Delete a chat session and all its messages."""
+    with get_connection() as conn:
+        conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
+        conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+        conn.commit()
+    return True
+
+def rename_session(session_id: str, title: str) -> bool:
+    """Rename a chat session."""
+    safe_title = (title or "").strip()[:100]
+    if not safe_title:
+        return False
+    with get_connection() as conn:
+        conn.execute("UPDATE sessions SET title = ? WHERE id = ?", (safe_title, session_id))
+        conn.commit()
+    return True
 
 def get_sessions():
     with get_connection() as conn:
@@ -300,22 +405,23 @@ def delete_fact(key):
 # ── Workout cache helpers ─────────────────────────────────────────────────────
 
 def upsert_workout(record: dict):
-    """Insert or update a workout row keyed on activity_id."""
+    """Insert or update a workout row keyed on (source, activity_id)."""
     record = validate_workout_record(record)
     fields = [
-        "activity_id", "date", "workout_title", "duration_min",
+        "activity_id", "source", "workout_type", "date", "workout_title", "duration_min",
         "total_volume_kg", "exercise_count", "set_count",
         "exercises_raw", "muscle_groups", "has_drop_sets", "has_failure_sets",
         "sleep_hours", "sleep_efficiency", "hrv_ms", "resting_hr",
         "readiness_score", "readiness_label",
+        "calories", "hr_zones", "distance_km",
     ]
     values = [record.get(f) for f in fields]
     placeholders = ", ".join(["?"] * len(fields))
-    updates = ", ".join([f"{f}=excluded.{f}" for f in fields if f != "activity_id"])
+    updates = ", ".join([f"{f}=excluded.{f}" for f in fields if f not in ("activity_id", "source")])
     sql = f"""
         INSERT INTO workouts ({', '.join(fields)}, synced_at)
         VALUES ({placeholders}, CURRENT_TIMESTAMP)
-        ON CONFLICT(activity_id) DO UPDATE SET
+        ON CONFLICT(source, activity_id) DO UPDATE SET
             {updates},
             synced_at=CURRENT_TIMESTAMP
     """

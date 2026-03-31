@@ -2,6 +2,7 @@ from langchain_core.tools import tool
 import json
 from src.analysis.load import compute_weekly_load, compute_acwr, progressive_overload_check
 from src.analysis.dataset import build_dataset
+from src.analysis.strength import detect_prs, compute_muscle_group_volume
 
 
 def _bounded_int(value, default, minimum, maximum):
@@ -66,4 +67,30 @@ def get_exercise_progress(exercise_name: str):
     result = progressive_overload_check(df, safe_name)
     return json.dumps(result)
 
-progress_tools = [get_recent_workouts, get_weekly_load, get_acwr, get_exercise_progress]
+@tool
+def get_personal_records():
+    """
+    Returns current personal records (estimated 1RM, max session volume)
+    for all exercises across the last 90 days.
+    """
+    df = build_dataset(n_days=90)
+    if df.empty:
+        return json.dumps({"error": "No data available."})
+    prs = detect_prs(df)
+    return json.dumps(prs)
+
+@tool
+def get_muscle_group_volume(days: int = 7):
+    """
+    Returns total volume (kg) per muscle group for the given time period.
+    Useful for answering 'Did I hit enough chest volume this week?'
+    """
+    safe_days = _bounded_int(days, default=7, minimum=1, maximum=90)
+    df = build_dataset(n_days=safe_days)
+    if df.empty:
+        return json.dumps({"error": "No data available."})
+    volumes = compute_muscle_group_volume(df)
+    return json.dumps(volumes)
+
+progress_tools = [get_recent_workouts, get_weekly_load, get_acwr, get_exercise_progress,
+                  get_personal_records, get_muscle_group_volume]

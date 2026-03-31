@@ -1,15 +1,16 @@
 """
 sync/engine.py
 Delta sync engine: pulls new Strava activities + matching Fitbit biometrics,
+pulls Fitbit activity log entries (Pixel Watch workouts),
 builds unified session records, and upserts them into the local SQLite cache.
 """
 
 from datetime import datetime, timezone
 from src.clients.strava_client import StravaClient
-from src.clients.fitbit_client import FitbitClient
+from src.clients.fitbit_client import FitbitClient, ACTIVITY_TYPE_MAP
 from src.parsers.hevy_parser import parse_description
 from src.analysis.readiness import compute_readiness
-from src.analysis.dataset import build_session_record
+from src.analysis.dataset import build_session_record, build_fitbit_session_record
 from src.utils.database import (
     upsert_workout,
     validate_workout_record,
@@ -140,6 +141,11 @@ class SyncEngine:
         if synced > 0:
             set_last_synced("strava", latest_synced_activity_dt)
 
+        # ── Fitbit activity sync ──────────────────────────────────────────
+        fitbit_synced, fitbit_errors = self._sync_fitbit_activities(force=force)
+        synced += fitbit_synced
+        errors += fitbit_errors
+
         result = {
             "synced": synced,
             "errors": errors,
@@ -147,3 +153,56 @@ class SyncEngine:
         }
         app_logger.info(f"Sync complete: {result}")
         return result
+
+    def _sync_fitbit_activities(self, force: bool = False) -> tuple[int, int]:
+        """Sync Fitbit activity log entries (Pixel Watch workouts) alongside Strava."""
+        last_synced = _to_utc_aware(get_last_synced("fitbit_activities"))
+        app_logger.info(
+            f"Fitbit activity sync starting — last_synced={last_synced}, force={force}"
+        )
+
+        activities = safe_fetch(self.fitbit.get_activities, None, 50) or []
+        if not activities:
+            app_logger.info("Fitbit activity sync: no activities returned")
+            return 0, 0
+
+        synced = 0
+        errors = 0
+        latest_dt = None
+
+        for activity in activities:
+            try:
+                start_time = activity.get("startTime", "")
+                if not start_time:
+                    continue
+
+                activity_dt = _parse_activity_timestamp(start_time)
+                if activity_dt is None:
+                    continue
+
+                if not force and last_synced and activity_dt <= last_synced:
+                    continue
+
+                record = build_fitbit_session_record(activity, ACTIVITY_TYPE_MAP)
+                validated = validate_workout_record(record)
+                upsert_workout(validated)
+                synced += 1
+
+                if latest_dt is None or activity_dt > latest_dt:
+                    latest_dt = activity_dt
+            except ValueError as e:
+                errors += 1
+                app_logger.warning(
+                    f"Fitbit sync validation skipped activity {activity.get('logId')}: {e}"
+                )
+            except Exception as e:
+                errors += 1
+                app_logger.error(
+                    f"Fitbit sync error for activity {activity.get('logId')}: {e}"
+                )
+
+        if synced > 0 and latest_dt:
+            set_last_synced("fitbit_activities", latest_dt)
+
+        app_logger.info(f"Fitbit activity sync: {synced} synced, {errors} errors")
+        return synced, errors

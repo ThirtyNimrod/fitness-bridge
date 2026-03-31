@@ -1,5 +1,6 @@
 from src.memory.store import ShortTermStore, LongTermStore, SemanticStore
 from src.utils import database
+from src.utils.logger import app_logger
 import json
 import re
 
@@ -86,6 +87,7 @@ class MemoryManager:
         try:
             facts = json.loads(result_text)
             if not isinstance(facts, dict):
+                app_logger.debug("Fact extraction returned non-dict, skipping")
                 return
 
             accepted = 0
@@ -102,5 +104,23 @@ class MemoryManager:
 
                 self.semantic.upsert(key_clean, str(value))
                 accepted += 1
-        except Exception:
-            pass
+
+            if accepted > 0:
+                app_logger.info(f"Fact extraction: stored {accepted} fact(s)")
+        except json.JSONDecodeError:
+            # Fallback: try to extract key-value pairs with regex
+            pairs = re.findall(r'"([a-zA-Z0-9_\- ]{1,64})"\s*:\s*"([^"]{1,200})"', result_text)
+            accepted = 0
+            for key, value in pairs:
+                if accepted >= MAX_FACTS_PER_RESPONSE:
+                    break
+                key_clean = key.strip().lower()
+                if FACT_KEY_PATTERN.match(key_clean):
+                    self.semantic.upsert(key_clean, value.strip())
+                    accepted += 1
+            if accepted > 0:
+                app_logger.info(f"Fact extraction (regex fallback): stored {accepted} fact(s)")
+            else:
+                app_logger.debug("Fact extraction failed: could not parse LLM response")
+        except Exception as exc:
+            app_logger.warning(f"Fact extraction error: {exc}")

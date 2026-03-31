@@ -24,7 +24,16 @@ class TestCoachPage:
         at = AppTest.from_file(COACH_PAGE, default_timeout=10)
         at.run()
         before = len(get_sessions())
-        at.button[0].click().run()
+        # "New Chat" button is after ✏️ rename and 🗑️ delete buttons
+        new_chat_btn = None
+        for btn in at.button:
+            if btn.label == "+ New Chat":
+                new_chat_btn = btn
+                break
+        if new_chat_btn is None:
+            # Fallback: last button in the list
+            new_chat_btn = at.button[-1]
+        new_chat_btn.click().run()
         after = len(get_sessions())
         assert after == before + 1
 

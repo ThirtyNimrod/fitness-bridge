@@ -83,7 +83,16 @@ def router_node(state: AgentState):
     if intent_str not in ["readiness", "progress", "coach", "general"]:
         intent_str = "general"
 
-    return {"intent": intent_str, "tool_iterations": 0}
+    # Compute the target agent name for UI visibility
+    _agent_map = {
+        "readiness": "Readiness Specialist",
+        "progress": "Progress Analyst",
+        "coach": "Coach",
+        "general": "Coach",
+    }
+    routed_to = _agent_map.get(intent_str, "Coach")
+
+    return {"intent": intent_str, "tool_iterations": 0, "routed_to": routed_to}
 
 
 def _heuristic_intent(query: str):
@@ -125,7 +134,8 @@ def route_to_agent(state: AgentState):
         "coach":     "coach_agent",
         "general":   "coach_agent" 
     }
-    return mapping.get(intent, "coach_agent")
+    agent = mapping.get(intent, "coach_agent")
+    return agent
 
 def route_tools(state: AgentState):
     if int(state.get("tool_iterations", 0)) >= MAX_TOOL_LOOPS:

@@ -21,6 +21,8 @@ def build_session_record(activity, exercises, readiness):
     return {
         "date": date_str,
         "activity_id": str(activity.get("id", "")),
+        "source": "strava",
+        "workout_type": "strength" if exercises else None,
         "workout_title": activity.get("name", "Workout"),
         "duration_min": activity.get("elapsed_time", 0) / 60,
         "total_volume_kg": total_volume_kg,
@@ -36,6 +38,48 @@ def build_session_record(activity, exercises, readiness):
         "resting_hr": readiness.get("resting_hr"),
         "readiness_score": readiness.get("score"),
         "readiness_label": readiness.get("label"),
+    }
+
+
+def build_fitbit_session_record(activity: dict, activity_type_map: dict) -> dict:
+    """Build a workout record from a Fitbit activity log entry (Pixel Watch workouts)."""
+    type_id = activity.get("activityTypeId", 0)
+    start_time = activity.get("startTime", "")
+    date_str = start_time[:10] if start_time else "1970-01-01"
+
+    # Distance: Fitbit returns in the user's unit; normalise to km
+    distance_raw = activity.get("distance", 0) or 0
+    distance_unit = activity.get("distanceUnit", "")
+    if isinstance(distance_unit, str) and "mile" in distance_unit.lower():
+        distance_km = round(distance_raw * 1.60934, 2)
+    else:
+        distance_km = round(distance_raw, 2) if distance_raw else None
+
+    hr_zones = activity.get("heartRateZones", [])
+
+    return {
+        "activity_id": str(activity.get("logId", "")),
+        "source": "fitbit",
+        "workout_type": activity_type_map.get(type_id, "other"),
+        "date": date_str,
+        "workout_title": activity.get("activityName", "Fitbit Activity"),
+        "duration_min": round(activity.get("activeDuration", 0) / 60000, 1),
+        "total_volume_kg": 0,
+        "exercise_count": 0,
+        "set_count": 0,
+        "exercises_raw": "[]",
+        "muscle_groups": "[]",
+        "has_drop_sets": 0,
+        "has_failure_sets": 0,
+        "sleep_hours": None,
+        "sleep_efficiency": None,
+        "hrv_ms": None,
+        "resting_hr": None,
+        "readiness_score": None,
+        "readiness_label": None,
+        "calories": activity.get("calories", 0),
+        "hr_zones": json.dumps(hr_zones) if hr_zones else None,
+        "distance_km": distance_km,
     }
 
 

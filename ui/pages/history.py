@@ -52,29 +52,77 @@ def _render_summary(rows: list[dict]):
 			st.metric("Avg Readiness", average_readiness)
 
 
+def _source_badge(source: str) -> str:
+	if source == "fitbit":
+		return "🔵 Fitbit"
+	return "🟠 Strava"
+
+
 def _render_workout_card(row: dict):
 	title = row.get("workout_title") or "Workout"
-	header = f"{row.get('date')} — {title} · {float(row.get('total_volume_kg') or 0):,.0f} kg"
+	source = row.get("source", "strava")
+	badge = _source_badge(source)
+	volume_kg = float(row.get("total_volume_kg") or 0)
+	calories = row.get("calories")
+	workout_type = row.get("workout_type") or ""
+
+	# Build header line
+	header_parts = [f"{row.get('date')} — {title}"]
+	if volume_kg > 0:
+		header_parts.append(f"{volume_kg:,.0f} kg")
+	elif calories:
+		header_parts.append(f"{float(calories):,.0f} cal")
+	header_parts.append(badge)
+	header = " · ".join(header_parts)
+
 	with st.expander(header):
-		meta_left, meta_mid, meta_right = st.columns(3)
-		with meta_left:
-			st.metric("Exercises", int(row.get("exercise_count") or 0))
-		with meta_mid:
-			st.metric("Sets", int(row.get("set_count") or 0))
-		with meta_right:
-			duration = row.get("duration_min")
-			st.metric("Duration", f"{float(duration):.0f} min" if duration is not None else "N/A")
+		# For Fitbit non-exercise workouts, show duration/calories/HR instead of sets
+		if source == "fitbit" and int(row.get("exercise_count") or 0) == 0:
+			meta_left, meta_mid, meta_right = st.columns(3)
+			with meta_left:
+				duration = row.get("duration_min")
+				st.metric("Duration", f"{float(duration):.0f} min" if duration is not None else "N/A")
+			with meta_mid:
+				st.metric("Calories", f"{float(calories):,.0f}" if calories else "N/A")
+			with meta_right:
+				distance = row.get("distance_km")
+				st.metric("Distance", f"{float(distance):.1f} km" if distance else "N/A")
 
-		if row.get("readiness_label"):
-			st.caption(f"Readiness: {row['readiness_label']}")
+			if workout_type:
+				st.caption(f"Type: {workout_type.title()}")
 
-		for exercise in parse_json_list(row.get("exercises_raw")):
-			muscle_group = exercise.get("muscle_group", "other")
-			exercise_name = exercise.get("name", "Exercise")
-			with st.container(border=True):
-				st.write(f"**{exercise_name}** ({muscle_group})")
-				for set_data in exercise.get("sets", []):
-					st.write(format_set(set_data))
+			# Show HR zones if available
+			hr_zones_raw = row.get("hr_zones")
+			if hr_zones_raw:
+				zones = parse_json_list(hr_zones_raw)
+				if zones:
+					st.caption("Heart Rate Zones")
+					for zone in zones:
+						name = zone.get("name", "")
+						minutes = zone.get("minutes", 0)
+						if minutes > 0:
+							st.write(f"  {name}: {minutes} min")
+		else:
+			# Standard Strava/exercise workout card
+			meta_left, meta_mid, meta_right = st.columns(3)
+			with meta_left:
+				st.metric("Exercises", int(row.get("exercise_count") or 0))
+			with meta_mid:
+				st.metric("Sets", int(row.get("set_count") or 0))
+			with meta_right:
+				duration = row.get("duration_min")
+				st.metric("Duration", f"{float(duration):.0f} min" if duration is not None else "N/A")
+
+			if row.get("readiness_label"):
+				st.caption(f"Readiness: {row['readiness_label']}")
+
+			for exercise in parse_json_list(row.get("exercises_raw")):
+				muscle_group = exercise.get("muscle_group", "other")
+				exercise_name = exercise.get("name", "Exercise")
+				with st.container(border=True):
+					st.write(f"**{exercise_name}** ({muscle_group})")
+					for set_data in exercise.get("sets", []):
+						st.write(format_set(set_data))
 
 
 def _render_pagination(total_rows: int):
@@ -114,6 +162,13 @@ with filters_col3:
 	max_volume = float(st.number_input("Max volume (kg)", min_value=0.0, value=100000.0, step=100.0))
 
 all_rows = _load_filtered_workouts(start_value.isoformat(), end_value.isoformat(), title_query, min_volume, max_volume)
+
+# Source filter
+source_options = sorted(set(r.get("source", "strava") for r in all_rows)) if all_rows else []
+if len(source_options) > 1:
+	selected_sources = st.multiselect("Source", options=[s.title() for s in source_options], default=[s.title() for s in source_options])
+	all_rows = [r for r in all_rows if (r.get("source", "strava")).title() in selected_sources]
+
 available_groups = _extract_muscle_groups(all_rows)
 selected_groups = st.multiselect("Muscle groups", options=available_groups)
 filtered_rows = _filter_by_muscle_groups(all_rows, selected_groups)

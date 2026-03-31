@@ -13,13 +13,22 @@ load_dotenv()
 from src.utils.database import create_session, init_db
 from ui.components.sidebar import render_sidebar
 from ui.shared import run_startup_sync, start_background_sync
+from ui.styles import inject_css
+from config import validate_config
+from src.utils.logger import app_logger
 
 init_db()
+
+# Validate configuration on startup
+config_warnings = validate_config()
+for warning in config_warnings:
+    app_logger.warning(f"[CONFIG] {warning}")
 
 run_startup_sync()
 start_background_sync()
 
 st.set_page_config(page_title="Fitness Bridge AI", layout="wide", page_icon="🏋️")
+inject_css()
 
 if "session_id" not in st.session_state:
     st.session_state.session_id = create_session("Initial Session")

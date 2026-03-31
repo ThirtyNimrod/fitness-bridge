@@ -16,6 +16,47 @@ from config import (
     FITBIT_TOKEN_EXPIRES_AT,
 )
 
+# ── Fitbit Activity Type Mapping ──────────────────────────────────────────────
+# Maps Fitbit activityTypeId codes to normalised categories.
+# Extend this dict as you use more workout modes on your Pixel Watch.
+ACTIVITY_TYPE_MAP = {
+    # Sport
+    15000: "sport",          # Badminton
+    15010: "sport",          # Tennis
+    15020: "sport",          # Table Tennis
+    15030: "sport",          # Squash
+    15040: "sport",          # Racquetball
+    15050: "sport",          # Basketball
+    15060: "sport",          # Football (Soccer)
+    15070: "sport",          # Volleyball
+    15080: "sport",          # Cricket
+    # Strength
+    90013: "strength",       # Strength Training
+    90014: "strength",       # Weightlifting
+    90015: "strength",       # Weights
+    15820: "strength",       # Crossfit
+    # Cardio
+    90009: "cardio",         # Elliptical
+    90001: "cardio",         # Bike
+    90019: "cardio",         # Spinning
+    1020:  "cardio",         # Cycling
+    90024: "cardio",         # HIIT
+    12010: "cardio",         # Swimming
+    # Walking / Running
+    15680: "walking",        # Walk
+    15670: "walking",        # Treadmill
+    90013: "strength",       # (duplicate guard)
+    90009: "cardio",         # (duplicate guard)
+    15000: "sport",          # (duplicate guard)
+    17080: "walking",        # Hiking
+    90020: "running",        # Run
+    12150: "running",        # Outdoor Run
+    # Flexibility / Yoga
+    52001: "flexibility",    # Yoga
+    52002: "flexibility",    # Pilates
+    15660: "flexibility",    # Stretching
+}
+
 class AuthError(Exception):
     pass
 
@@ -152,3 +193,43 @@ class FitbitClient:
         url = f"{self.base_url}/user/-/profile.json"
         res = requests.get(url, headers=self._headers())
         return res.status_code == 200
+
+    # ── Activity Log Methods ──────────────────────────────────────────────────
+
+    @cached(ttl=3600, ignore=('self',))
+    @retry(wait=wait_exponential(multiplier=1, min=2, max=10), stop=stop_after_attempt(3), reraise=True)
+    def get_activities(self, before_date: str | None = None, limit: int = 20) -> list[dict]:
+        """Fetch user activity log list from Fitbit (Pixel Watch workouts).
+
+        Args:
+            before_date: ISO date string (YYYY-MM-DD). Defaults to today.
+            limit: Max activities to return (Fitbit caps at 100).
+        Returns:
+            List of activity log dicts.
+        """
+        safe_limit = max(1, min(100, limit))
+        params = {
+            "beforeDate": before_date or datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+            "offset": 0,
+            "limit": safe_limit,
+            "sort": "desc",
+        }
+        url = f"{self.base_url}/user/-/activities/list.json"
+        res = requests.get(url, headers=self._headers(), params=params)
+        if res.status_code == 401:
+            self._refresh_access_token()
+            res = requests.get(url, headers=self._headers(), params=params)
+        res.raise_for_status()
+        return res.json().get("activities", [])
+
+    @cached(ttl=3600, ignore=('self',))
+    @retry(wait=wait_exponential(multiplier=1, min=2, max=10), stop=stop_after_attempt(3), reraise=True)
+    def get_activity_detail(self, log_id: int) -> dict:
+        """Fetch detail for a single activity log entry."""
+        url = f"{self.base_url}/user/-/activities/{int(log_id)}.json"
+        res = requests.get(url, headers=self._headers())
+        if res.status_code == 401:
+            self._refresh_access_token()
+            res = requests.get(url, headers=self._headers())
+        res.raise_for_status()
+        return res.json()

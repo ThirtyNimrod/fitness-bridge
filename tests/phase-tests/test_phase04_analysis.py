@@ -95,7 +95,7 @@ class TestReadinessLabels:
 
 
 class TestComputeReadiness:
-    def test_full_readiness_output_shape(self):
+    def test_full_readiness_output_shape(self, fresh_db):
         sleep = {"summary": {"totalMinutesAsleep": 450, "efficiency": 90}}
         hrv = {"hrv": [{"value": {"dailyRmssd": 46.0}}]}
         result = compute_readiness(sleep, hrv, 58)
