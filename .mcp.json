@@ -1,0 +1,51 @@
+{
+  "mcpServers": {
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": {
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "YOUR_GITHUB_PAT_HERE"
+      },
+      "description": "GitHub operations - PRs, issues, repos"
+    },
+    "context7": {
+      "command": "npx",
+      "args": ["-y", "@upstash/context7-mcp@latest"],
+      "description": "Live documentation lookup — use with /docs command and documentation-lookup skill (resolve-library-id, query-docs)."
+    },
+    "memory": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-memory"],
+      "description": "Persistent memory across sessions"
+    },
+    "sequential-thinking": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-sequential-thinking"],
+      "description": "Chain-of-thought reasoning for complex planning tasks"
+    },
+    "exa-web-search": {
+      "command": "npx",
+      "args": ["-y", "exa-mcp-server"],
+      "env": {
+        "EXA_API_KEY": "YOUR_EXA_API_KEY_HERE"
+      },
+      "description": "Web search and research via Exa API — use after GitHub search and primary docs"
+    },
+    "playwright": {
+      "command": "npx",
+      "args": ["-y", "@playwright/mcp", "--browser", "chrome"],
+      "description": "Browser automation and E2E testing via Playwright"
+    },
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "d:/AntiGravity/fitness-bridge"],
+      "description": "Filesystem operations scoped to this project"
+    }
+  },
+  "_comments": {
+    "usage": "This .mcp.json is read by VS Code (GitHub Copilot), Antigravity, and Claude Code",
+    "env_vars": "Replace YOUR_*_HERE placeholders with actual values from your .env file",
+    "context_warning": "Keep under 10 MCPs enabled to preserve context window",
+    "setup": "Run: npx -y @modelcontextprotocol/server-github  (etc.) to verify connectivity"
+  }
+}
