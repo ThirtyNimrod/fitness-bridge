@@ -1,7 +1,7 @@
 import sqlite3
 import os
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from config import DB_PATH, SHORT_TERM_WINDOW
 
 SCHEMA_VERSION = 3
@@ -530,8 +530,8 @@ def set_last_synced(source: str, synced_at: datetime | None = None):
             """, (source,))
         else:
             if synced_at.tzinfo is None:
-                synced_at = synced_at.replace(tzinfo=datetime.UTC)
-            synced_at_str = synced_at.astimezone(datetime.UTC).isoformat()
+                synced_at = synced_at.replace(tzinfo=timezone.utc)
+            synced_at_str = synced_at.astimezone(timezone.utc).isoformat()
             conn.execute("""
                 INSERT INTO sync_meta (source, last_synced_at)
                 VALUES (?, ?)

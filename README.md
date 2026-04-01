@@ -120,12 +120,15 @@ py -3.13 -m venv .venv
 pip install -r requirements.txt
 ```
 
-### 2. Configure credentials
+### 2. Configure API credentials
 
-```bash
-cp .env.example .env
-# Edit .env and fill in your API tokens
+Run the interactive token setup script — it walks you through Strava and Fitbit OAuth, then writes all tokens directly to `.env`:
+
+```powershell
+.\scripts\GET_TOKENS.ps1
 ```
+
+This opens your browser for each service's OAuth flow and saves your tokens automatically. See [`scripts/README.md`](scripts/README.md) for full details.
 
 ### 3. Start Ollama
 
@@ -144,9 +147,9 @@ streamlit run app.py
 
 ```bash
 # Run all phases in order (stops on first failure)
-python run_tests.py
+python scripts/run_tests.py
 
-# Or run pytest directly
+# Or run pytest directly from the root
 pytest
 
 # Run a specific phase
@@ -177,11 +180,21 @@ Hevy exports workout data into the Strava activity **description** field as plai
 
 ```
 fitness-bridge/
-├── app.py                  # Streamlit entrypoint, multipage navigation
+├── app.py                  # Streamlit entrypoint
 ├── config.py               # All constants and env loading
+├── pytest.ini              # pytest config (testpaths = tests)
 ├── requirements.txt
+├── AGENTS.md               # AI agent instructions
+├── README.md
 ├── scripts/
-│   └── SETUP.bat           # One-click environment setup
+│   ├── README.md           # Script usage guide
+│   ├── SETUP.bat           # One-click environment setup
+│   ├── GET_TOKENS.ps1      # First-time Strava + Fitbit OAuth
+│   ├── REFRESH_STRAVA.ps1  # Re-authorize Strava
+│   ├── REFRESH_FITBIT.ps1  # Re-authorize Fitbit
+│   ├── run_tests.py        # Phase-ordered test runner
+│   ├── check_app_log.py    # Logger smoke test
+│   └── test_log.py         # Logger path checker
 ├── src/
 │   ├── clients/            # Strava + Fitbit API wrappers
 │   ├── parsers/            # Hevy plaintext → structured data
@@ -201,14 +214,16 @@ fitness-bridge/
 │   ├── shared.py           # Reusable helpers (format_set, sync)
 │   ├── styles.py           # Custom CSS injection
 │   └── pages/
-│       ├── coach.py        # AI coach + session management (rename/delete)
+│       ├── coach.py        # AI coach + session management
 │       ├── history.py      # Workout browser + multi-source filters
-│       ├── settings.py     # Credentials, sync controls, fact management
+│       ├── settings.py     # Credentials, sync controls, token expiry, facts
 │       └── diagnostics.py  # Router metrics, sync health, API quota
 ├── tests/
 │   ├── conftest.py         # Fixtures + DB isolation
 │   └── phase-tests/        # Phase00–08 pytest suites
-└── docs/                   # Technical documentation
+└── docs/
+    ├── RULES.md            # Developer coding rules
+    └── technical_reference.md
 ```
 
 ---
@@ -224,7 +239,7 @@ fitness-bridge/
 | **Dashboard** | Training overview | ⚡ Readiness, 🏋️ Volume, 📊 ACWR, 🗓️ Sessions; time range toggle (7d/14d/30d/90d); calendar heatmap; HR zone + calorie + muscle volume charts |
 | **Coach** | AI chat agent | Session picker, streaming responses, message history; rename (✏️) and delete (🗑️) sessions; dynamic auto-titling; routing visibility |
 | **History** | Workout browser | Date/title/volume filters, source filter (Strava/Fitbit), muscle-group selector, pagination; source badges (🟠/🔵) |
-| **Settings** | Credentials & controls | Manual sync, cache clear, connection status pills; semantic fact management (view/edit/delete) |
+| **Settings** | Credentials & controls | Manual sync, cache clear, connection status pills; 🔑 Token Expiry panel (live time-to-expiry with green/amber/red status); semantic fact management (view/edit/delete) |
 | **Diagnostics** | Observability | Router metrics, Strava API quota usage, sync health for Strava + Fitbit activities |
 
 ### Visual Design Principles
@@ -279,6 +294,23 @@ def get_workouts_filtered(
 - **Background daemon**: Runs every 2 hours (configurable via `BACKGROUND_SYNC_INTERVAL`); respects sync lock to avoid overlap
 - **Cache bypass**: Manual sync clears diskcache to force fresh API data
 - **Multi-source schema**: Composite primary key `(source, activity_id)` supports both sources in one table
+
+---
+
+## Token Management
+
+Tokens are managed at three levels:
+
+| Level | What it does |
+|---|---|
+| **`scripts/GET_TOKENS.ps1`** | First-time OAuth setup for both Strava and Fitbit |
+| **`scripts/REFRESH_STRAVA.ps1`** | Re-authorize Strava when persistent 401s appear |
+| **`scripts/REFRESH_FITBIT.ps1`** | Re-authorize Fitbit when persistent 401s appear |
+| **App auto-refresh** | `StravaClient` and `FitbitClient` check expiry on every request and silently refresh using the stored refresh token |
+| **`src/utils/token_writer.py`** | Writes refreshed tokens to both `.env` (persistence) and `os.environ` (live in-process use) |
+| **Settings → 🔑 Token Expiry** | Live UI panel showing exact expiry time for both access tokens with colour-coded alerts |
+
+See [`scripts/README.md`](scripts/README.md) for when and why to run each script.
 
 ---
 
@@ -344,7 +376,7 @@ All fixtures ensure test isolation; no test pollution across runs.
 
 ## Future Roadmap
 
-- OAuth UI flow for token refresh (currently manual via `.env`)
+- In-app OAuth re-authorization flow (currently via `scripts/REFRESH_*.ps1`)
 - Vector search over session history for semantic queries
 - Nutrition integration (MyFitnessPal / Cronometer)
 - Training plan generator

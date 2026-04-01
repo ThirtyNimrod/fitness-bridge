@@ -1,6 +1,7 @@
 import threading
 import time
 import json
+import os
 
 import streamlit as st
 
@@ -44,13 +45,31 @@ def run_startup_sync():
     return True
 
 
-@st.cache_data(ttl=120)
-def get_connection_statuses():
+@st.cache_data(ttl=3600)
+def get_token_statuses() -> dict:
+    """
+    Cheap, API-free status check — reads token presence from os.environ.
+    Safe to call on every render / tab switch. Cached for 1 hour.
+    'has_token' = True means a refresh token is stored (app can operate).
+    """
+    return {
+        "strava": {"has_token": bool(os.getenv("STRAVA_REFRESH_TOKEN"))},
+        "fitbit": {"has_token": bool(os.getenv("FITBIT_REFRESH_TOKEN"))},
+    }
+
+
+def get_connection_statuses() -> dict:
+    """
+    Live API ping — calls /athlete and /profile endpoints.
+    DO NOT call this on a normal render cycle (every tab switch).
+    Call it only from an explicit user action:
+      - 'Test Connection' button in Settings
+      - Immediately after a manual sync
+    """
     statuses = {
         "strava": {"connected": False, "error": None},
         "fitbit": {"connected": False, "error": None},
     }
-
     try:
         statuses["strava"]["connected"] = StravaClient().check_connection()
     except Exception as exc:

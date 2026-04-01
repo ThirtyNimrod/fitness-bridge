@@ -56,3 +56,6 @@ log_debug.txt
 # === Misc ===
 *.bak
 *.tmp
+
+# === Temporary files ===
+tmp/

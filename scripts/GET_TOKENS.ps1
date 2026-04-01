@@ -202,6 +202,40 @@ Write-Host "╔═════════════════════�
 Write-Host "║   All credentials saved to .env  ✅          ║" -ForegroundColor Green
 Write-Host "╚══════════════════════════════════════════════╝" -ForegroundColor Green
 Write-Host ""
+
+# ── Token expiry summary ──────────────────────────────────────────────────────
+Write-Host "  ⏱  Token Expiry Info" -ForegroundColor Cyan
+Write-Host ""
+
+# Strava access token expires in ~6h but its REFRESH token never expires
+$stravaExpiresAt = (Get-Content $EnvFile | Select-String "^STRAVA_TOKEN_EXPIRES_AT=") -replace "^STRAVA_TOKEN_EXPIRES_AT=", ""
+if ($stravaExpiresAt) {
+    try {
+        $stravaExpiry = [DateTimeOffset]::FromUnixTimeSeconds([long]$stravaExpiresAt).LocalDateTime
+        Write-Host ("  🟠 Strava access token expires:  " + $stravaExpiry.ToString("dd MMM yyyy HH:mm 'local'")) -ForegroundColor DarkYellow
+    } catch {}
+}
+Write-Host "     ↳ Strava REFRESH token: never expires (unless you revoke app access on Strava)" -ForegroundColor DarkGray
+
+$fitbitExpiresAt = (Get-Content $EnvFile | Select-String "^FITBIT_TOKEN_EXPIRES_AT=") -replace "^FITBIT_TOKEN_EXPIRES_AT=", ""
+if ($fitbitExpiresAt) {
+    try {
+        $fitbitExpiry = [DateTimeOffset]::FromUnixTimeSeconds([long]$fitbitExpiresAt).LocalDateTime
+        Write-Host ("  🔵 Fitbit  access token expires:  " + $fitbitExpiry.ToString("dd MMM yyyy HH:mm 'local'")) -ForegroundColor DarkYellow
+    } catch {}
+}
+
+# Fitbit refresh tokens expire if unused for 8 months, or after ~1 year
+$fitbitRefreshExpiry = (Get-Date).AddMonths(8)
+Write-Host ("     ↳ Fitbit REFRESH token:  valid ~8 months if used — expires around " + $fitbitRefreshExpiry.ToString("dd MMM yyyy")) -ForegroundColor DarkGray
+
+Write-Host ""
+Write-Host "  ℹ️  The app auto-refreshes access tokens while running." -ForegroundColor White
+Write-Host "     You only need to re-run this script if:" -ForegroundColor White
+Write-Host "     • You revoke app access on Strava or Fitbit" -ForegroundColor White
+Write-Host "     • The Fitbit refresh token expires (~8 months idle)" -ForegroundColor White
+Write-Host "     • You see persistent 401 errors even after an app restart" -ForegroundColor White
+Write-Host ""
 Write-Host "  Next: make sure Ollama is running, then start the app:" -ForegroundColor White
 Write-Host "    ollama serve" -ForegroundColor DarkCyan
 Write-Host "    streamlit run app.py" -ForegroundColor DarkCyan

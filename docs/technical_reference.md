@@ -129,6 +129,7 @@ sync_meta(source TEXT PRIMARY KEY, last_synced_at DATETIME)
 **Key functions:**
 
 - `upsert_workout(row)` — Idempotent write with composite key `(source, activity_id)`; safe to re-run
+- `set_last_synced(source, dt)` — Updates `sync_meta` using `timezone.utc` (Python-side) to avoid crash on `datetime.UTC`.
 - `validate_workout_record(row)` — Normalises and validates all fields before upsert; defaults `source` to `'strava'`
 - `get_workouts_filtered(start_date, end_date, title_query, min_volume, max_volume, limit, offset)` — Server-side filtering for History page
 - `get_workout_dates(n_days)` — Training dates for the last N days (caches with TTL=3600)
@@ -143,15 +144,16 @@ sync_meta(source TEXT PRIMARY KEY, last_synced_at DATETIME)
 
 Thin HTTP wrappers around the Strava and Fitbit v1 APIs.
 
-- Token refresh is triggered automatically on `__init__` (Strava: checks 401, Fitbit: checks `check_connection()`).
+- Token refresh is triggered automatically on `__init__` or before requests.
+- Persisted via `src/utils/token_writer.py`, which updates both `.env` (disk) and `os.environ` (in-memory) to ensure live clients pick up new credentials immediately.
 - All fetch methods are decorated with `@cached(ttl=3600, ignore=('self',))` and `@retry(...)`.
 - Clients return **raw JSON** — no parsing logic lives here.
 
-**Strava token note:** Strava refresh tokens do not expire, but access tokens live 6 hours. The client refreshes on startup but does not persist the new access token back to `.env`. For long-running sessions, restart the app if you get 401s.
+**Strava token note:** Refresh tokens are long-lived. Access tokens live 6 hours and are auto-refreshed by `StravaClient`. If 401s persist, re-run `scripts/REFRESH_STRAVA.ps1`.
 
 **Strava quota tracking:** A thread-safe tracker counts API calls per 15-min window (limit: 100) and per day (limit: 1000). Warnings are logged at 80% of each limit. Current usage is visible on the Diagnostics page via `get_strava_quota()`.
 
-**Fitbit token note:** Fitbit access tokens expire in 8 hours. Same caveat applies. HRV data requires a **Personal** app type in the Fitbit developer portal.
+**Fitbit token note:** Access tokens expire in 8 hours; refresh tokens in ~8 months. If 401s persist or the refresh token expires, re-run `scripts/REFRESH_FITBIT.ps1`. HRV data requires a **Personal** app type in the Fitbit developer portal.
 
 **Fitbit activity sync:** `get_activities(before_date, limit)` fetches tracked workouts from Pixel Watch 2 via the Activity Log List API. `ACTIVITY_TYPE_MAP` maps Fitbit `activityTypeId` codes to normalised categories (`strength`, `cardio`, `sport`, `walking`, `running`, `flexibility`, `other`).
 
@@ -412,6 +414,10 @@ Aggregates `total_volume_kg` per exercise, mapped to muscle groups via `EXERCISE
 
 Streamlit multipage navigation with five pages and custom CSS theming. All UI state is persisted in `st.session_state` or database queries. Background sync runs on startup + every 2 hours (configurable).
 
+**Rendering Optimization (Session 0011):** To avoid lag and 10054 errors, the UI does NOT ping APIs on every render.
+1. **Always-visible status** (Sidebar/Settings): uses `get_token_statuses()` to check for credential presence in environment — zero network I/O.
+2. **Detailed validation**: uses an explicit "Test Live Connection" button in Settings to trigger a real API ping.
+
 ### `ui/styles.py` (CSS Injection) ← NEW
 
 Central CSS module injected by `app.py` on every page load via `inject_css()`.
@@ -432,6 +438,7 @@ Central CSS module injected by `app.py` on every page load via `inject_css()`.
 - Calls `start_background_sync()` (daemon thread, configurable interval)
 - Initialises `session_id` in state before rendering navigation
 - Wires five pages: Dashboard, Coach, History, Settings, Diagnostics
+- Note: `run_startup_sync()` and `start_background_sync()` use `run_sync_with_lock()` to prevent overlap.
 
 ### `ui/dashboard.py` (Training Metrics)
 
@@ -511,11 +518,12 @@ Expanders showing title, date, volume, exercises with source badge (🟠/🔵). 
 
 **Sections:**
 
-- Connection status pills (Strava ✓/✗, Fitbit ✓/✗) via `get_connection_statuses()` — styled with CSS pills
-- "Sync Now" button → calls `run_sync_with_lock(force=True)`, clears cache, reruns
-- "Clear Cache" button → clears diskcache, reruns
-- **Fact Management** section ← NEW: displays all semantic facts in editable data table; supports edit, delete, and manual add
-- ℹ️ Help text for token refresh and troubleshooting
+- Connection status pills: uses `get_token_statuses()` to show "Configured/Not Configured" based on credential presence.
+- **🔌 Test Live Connection** button: triggers `get_connection_statuses()` for a one-time API ping. Results are stored in `st.session_state` and rendered below.
+- **Sync Now** button: calls `run_sync_with_lock(force=True)`, clears cache, and clears connection state.
+- **Token Expiry** panel: computes and displays live time-to-expiry with colour-coded alerts (success/warning/error).
+- **Fact Management** section: displays all semantic facts in editable data table; supports edit, delete, and manual add
+- ℹ️ Help text for token refresh and troubleshooting via `scripts/README.md`.
 
 ### `ui/pages/diagnostics.py` (Observability)
 
@@ -550,9 +558,10 @@ Calls `reset_routing_metrics()`, reruns page. Useful for seeing metrics over a s
 **Sync helpers:**
 
 - `run_sync_with_lock(force)` — Thread-safe sync dispatch; clears cache if force=True
-- `start_background_sync()` — Daemon thread, runs every `BACKGROUND_SYNC_INTERVAL` seconds (default 2 hours)
+- `start_background_sync()` — Daemon thread, runs every `BACKGROUND_SYNC_INTERVAL` seconds
 - `run_startup_sync()` — Cache resource, runs once per Streamlit session
-- `get_connection_statuses()` — Returns Strava/Fitbit health with error capture
+- `get_token_statuses()` — [NEW] Returns credential presence from env (cached for 1h, zero network I/O). Used for always-visible status.
+- `get_connection_statuses()` — Returns results of live API pings. No cache. Call only on explicit UI action.
 
 ---
 
@@ -705,7 +714,7 @@ All values in `config.py`. Override by setting in `.env`.
 
 **Ordered mode (stops on first failure):**
 ```bash
-python run_tests.py
+python scripts/run_tests.py
 ```
 
 **Pytest directly:**

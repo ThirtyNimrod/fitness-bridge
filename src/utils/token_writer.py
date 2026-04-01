@@ -55,5 +55,8 @@ def write_token_to_env(key: str, value: str) -> None:
                     os.unlink(temp_path)
 
         app_logger.info(f"Token updated in .env: {key}")
+        # Also update the live environment so in-process os.getenv() reads pick
+        # up the new value immediately (without needing an app restart).
+        os.environ[key] = str(value)
     except OSError as e:
         app_logger.error(f"token_writer: could not write .env — {e}")

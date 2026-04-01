@@ -3,7 +3,7 @@ import sys
 import subprocess
 
 def main():
-    root_dir = os.path.dirname(os.path.abspath(__file__))
+    root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     phase_tests_dir = os.path.join(root_dir, "tests", "phase-tests")
     
     if not os.path.exists(phase_tests_dir):

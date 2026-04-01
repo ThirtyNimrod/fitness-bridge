@@ -9,6 +9,7 @@
 - Keep contributions focused, reviewable, and well-described.
 - Use type annotations on all Python function signatures.
 - Use `logging` module instead of `print()`.
+- Use `timezone.utc` (from `datetime.timezone`) for UTC timestamps to avoid `datetime.UTC` errors.
 
 ## Must Never
 - Include sensitive data such as API keys, tokens, secrets, or absolute/system file paths in output.
