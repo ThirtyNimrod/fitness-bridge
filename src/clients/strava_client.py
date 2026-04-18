@@ -6,7 +6,7 @@ import requests
 from tenacity import retry, wait_exponential, stop_after_attempt
 from src.utils.cache import cached
 from src.utils.logger import app_logger
-from src.utils.token_writer import write_token_to_env
+from src.utils.database import get_api_token, upsert_api_token
 
 from config import (
     STRAVA_ACCESS_TOKEN,
@@ -60,6 +60,9 @@ def get_strava_quota() -> dict:
 class AuthError(Exception):
     pass
 
+# Browser-like User Agent to avoid connection resets from Strava's infrastructure
+STRAVA_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+
 class StravaClient:
     def __init__(self):
         self.base_url = "https://www.strava.com/api/v3"
@@ -68,6 +71,12 @@ class StravaClient:
         self.refresh_token = STRAVA_REFRESH_TOKEN
         self.access_token = None
         self.token_expires_at = None
+        self.session = requests.Session()
+        self.session.headers.update({
+            "User-Agent": STRAVA_USER_AGENT,
+            "Accept": "application/json",
+            "Connection": "close"
+        })
         self._load_runtime_auth_state()
         self._ensure_access_token()
 
@@ -79,11 +88,23 @@ class StravaClient:
         return env_val if env_val else None
 
     def _load_runtime_auth_state(self):
+        # 1. Try Database (The Vault)
+        token_data = get_api_token("strava")
+        if token_data and token_data.get("refresh_token"):
+            self.access_token = token_data.get("access_token")
+            self.refresh_token = token_data.get("refresh_token")
+            self.token_expires_at = self._parse_expiry(token_data.get("expires_at"))
+            app_logger.info("Strava tokens loaded from database vault")
+            return
+
+        # 2. Fallback to Environment (Initial setup)
         self.access_token = self._get_runtime_value("STRAVA_ACCESS_TOKEN", STRAVA_ACCESS_TOKEN)
         self.refresh_token = self._get_runtime_value("STRAVA_REFRESH_TOKEN", self.refresh_token)
         self.token_expires_at = self._parse_expiry(
             self._get_runtime_value("STRAVA_TOKEN_EXPIRES_AT", STRAVA_TOKEN_EXPIRES_AT)
         )
+        if self.refresh_token:
+            app_logger.info("Strava tokens loaded from environment (fallback)")
 
     def _parse_expiry(self, expiry_value):
         if not expiry_value:
@@ -114,19 +135,23 @@ class StravaClient:
             "refresh_token": self.refresh_token,
             "grant_type": "refresh_token"
         }
-        res = requests.post(url, data=payload)
+        res = self.session.post(url, data=payload)
         if res.status_code == 200:
             data = res.json()
             self.access_token = data.get("access_token")
             self.token_expires_at = self._parse_expiry(data.get("expires_at"))
             if data.get("refresh_token"):
                 self.refresh_token = data["refresh_token"]
-            app_logger.info("Strava token refresh successful")
-            write_token_to_env("STRAVA_ACCESS_TOKEN", self.access_token)
-            if self.refresh_token:
-                write_token_to_env("STRAVA_REFRESH_TOKEN", self.refresh_token)
-            if data.get("expires_at"):
-                write_token_to_env("STRAVA_TOKEN_EXPIRES_AT", str(data["expires_at"]))
+            
+            app_logger.info("Strava token refresh successful — updating vault")
+            
+            expires_timestamp = data.get("expires_at")
+            upsert_api_token(
+                "strava",
+                self.access_token,
+                self.refresh_token,
+                int(expires_timestamp) if expires_timestamp else None
+            )
         else:
             app_logger.error(f"Strava token refresh failed: {res.text}")
             raise AuthError(f"Strava token refresh failed: {res.text}")
@@ -141,11 +166,11 @@ class StravaClient:
         _track_api_call()
         url = f"{self.base_url}/athlete/activities"
         params = {"per_page": per_page, "page": page}
-        res = requests.get(url, headers=self._headers(), params=params)
+        res = self.session.get(url, headers=self._headers(), params=params)
         if res.status_code == 401:
             self._refresh_access_token()
             _track_api_call()
-            res = requests.get(url, headers=self._headers(), params=params)
+            res = self.session.get(url, headers=self._headers(), params=params)
         res.raise_for_status()
         return res.json()
 
@@ -154,15 +179,15 @@ class StravaClient:
     def get_activity_detail(self, activity_id):
         _track_api_call()
         url = f"{self.base_url}/activities/{activity_id}"
-        res = requests.get(url, headers=self._headers())
+        res = self.session.get(url, headers=self._headers())
         if res.status_code == 401:
             self._refresh_access_token()
             _track_api_call()
-            res = requests.get(url, headers=self._headers())
+            res = self.session.get(url, headers=self._headers())
         res.raise_for_status()
         return res.json()
 
     def check_connection(self):
         url = f"{self.base_url}/athlete"
-        res = requests.get(url, headers=self._headers())
+        res = self.session.get(url, headers=self._headers())
         return res.status_code == 200

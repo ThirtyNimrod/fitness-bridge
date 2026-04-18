@@ -6,7 +6,7 @@ import requests
 from tenacity import retry, wait_exponential, stop_after_attempt
 from src.utils.cache import cached
 from src.utils.logger import app_logger
-from src.utils.token_writer import write_token_to_env
+from src.utils.database import get_api_token, upsert_api_token
 
 from config import (
     FITBIT_CLIENT_ID,
@@ -79,11 +79,23 @@ class FitbitClient:
         return env_val if env_val else None
 
     def _load_runtime_auth_state(self):
+        # 1. Try Database (The Vault)
+        token_data = get_api_token("fitbit")
+        if token_data and token_data.get("refresh_token"):
+            self.access_token = token_data.get("access_token")
+            self.refresh_token = token_data.get("refresh_token")
+            self.token_expires_at = self._parse_expiry(token_data.get("expires_at"))
+            app_logger.info("Fitbit tokens loaded from database vault")
+            return
+
+        # 2. Fallback to Environment (Initial setup)
         self.access_token = self._get_runtime_value("FITBIT_ACCESS_TOKEN", FITBIT_ACCESS_TOKEN)
         self.refresh_token = self._get_runtime_value("FITBIT_REFRESH_TOKEN", self.refresh_token)
         self.token_expires_at = self._parse_expiry(
             self._get_runtime_value("FITBIT_TOKEN_EXPIRES_AT", FITBIT_TOKEN_EXPIRES_AT)
         )
+        if self.refresh_token:
+            app_logger.info("Fitbit tokens loaded from environment (fallback)")
 
     def _parse_expiry(self, expiry_value):
         if not expiry_value:
@@ -129,12 +141,14 @@ class FitbitClient:
                 self.refresh_token = new_refresh
             if expires_in:
                 self.token_expires_at = datetime.now(timezone.utc) + timedelta(seconds=int(expires_in))
-            app_logger.info("Fitbit token refresh successful")
-            write_token_to_env("FITBIT_ACCESS_TOKEN",  self.access_token)
-            if self.refresh_token:
-                write_token_to_env("FITBIT_REFRESH_TOKEN", self.refresh_token)
-            if self.token_expires_at:
-                write_token_to_env("FITBIT_TOKEN_EXPIRES_AT", str(int(self.token_expires_at.timestamp())))
+            
+            app_logger.info("Fitbit token refresh successful — updating vault")
+            upsert_api_token(
+                "fitbit",
+                self.access_token,
+                self.refresh_token,
+                int(self.token_expires_at.timestamp()) if self.token_expires_at else None
+            )
         else:
             app_logger.error(f"Fitbit token refresh failed: {res.text}")
             raise AuthError(f"Fitbit token refresh failed: {res.text}")

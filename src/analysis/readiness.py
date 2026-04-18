@@ -1,4 +1,5 @@
 from src.utils.database import get_workouts
+import math
 
 
 def get_rolling_baselines(n_days: int = 30):
@@ -9,10 +10,32 @@ def get_rolling_baselines(n_days: int = 30):
 
     hrv_baseline = sum(hrv_values) / len(hrv_values) if hrv_values else 45.0
     rhr_baseline = sum(rhr_values) / len(rhr_values) if rhr_values else 60.0
+
     return {
         "hrv_baseline": hrv_baseline,
         "resting_hr_baseline": rhr_baseline,
+        "hrv_values": hrv_values # Return raw values for Z-score calculation
     }
+
+
+def compute_hrv_z_score(current_hrv: float, n_days: int = 30) -> float:
+    """Calculate the Z-score of today's HRV relative to the 30-day mean/std.
+    
+    A Z-score < -1.5 usually indicates significant fatigue/stress.
+    """
+    baselines = get_rolling_baselines(n_days=n_days)
+    vals = baselines.get("hrv_values", [])
+    if len(vals) < 5:
+        return 0.0
+    
+    mean = baselines["hrv_baseline"]
+    variance = sum((x - mean) ** 2 for x in vals) / len(vals)
+    std_dev = math.sqrt(variance)
+    
+    if std_dev == 0:
+        return 0.0
+        
+    return round((current_hrv - mean) / std_dev, 2)
 
 
 def score_sleep(sleep_data):

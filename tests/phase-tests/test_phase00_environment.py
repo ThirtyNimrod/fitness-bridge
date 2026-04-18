@@ -16,7 +16,6 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fil
 sys.path.insert(0, BASE_DIR)
 
 REQUIRED_PACKAGES = [
-    "streamlit",
     "langchain",
     "langgraph",
     "langchain_ollama",
@@ -26,6 +25,8 @@ REQUIRED_PACKAGES = [
     "pydantic",
     "requests",
     "dotenv",
+    "fastapi",
+    "uvicorn",
 ]
 
 REQUIRED_ENV_KEYS = [
@@ -85,9 +86,10 @@ class TestEnvironmentDotenv:
 class TestProjectStructure:
     @pytest.mark.parametrize("path", [
         "config.py",
-        "app.py",
+        "main.py",
         "requirements.txt",
         ".env.example",
+        "frontend/package.json",
         "src/utils/cache.py",
         "src/utils/database.py",
         "src/clients/strava_client.py",
@@ -108,8 +110,8 @@ class TestProjectStructure:
         "src/agents/tools/readiness_tools.py",
         "src/agents/tools/progress_tools.py",
         "src/agents/tools/coach_tools.py",
-        "ui/dashboard.py",
-        "ui/chat.py",
+        "src/sync/service.py",
+        "src/utils/formatting.py",
     ])
     def test_file_exists(self, path):
         """Verify all expected implementation files exist."""

@@ -243,3 +243,52 @@ def compute_muscle_group_volume(df: pd.DataFrame) -> dict[str, float]:
             group_volumes[group] = group_volumes.get(group, 0) + vol
 
     return group_volumes
+
+
+def detect_strength_plateaus(df: pd.DataFrame, exercise_name: str, window: int = 5) -> dict:
+    """Detect if an exercise has stalled in performance over the last N appearances.
+    
+    A plateau is defined as < 1% improvement in E1RM over the window.
+    """
+    if df.empty or "exercises_raw" not in df.columns:
+        return {"exercise": exercise_name, "plateau": False, "reason": "no_data"}
+
+    appearances = []
+    df_sorted = df.sort_values(by="date")
+    
+    for _, row in df_sorted.iterrows():
+        try:
+            exs = json.loads(row.get("exercises_raw", "[]"))
+            for ex in exs:
+                if ex.get("name", "").strip().lower() == exercise_name.strip().lower():
+                    # Find max 1RM for this workout
+                    max_e1rm = 0
+                    for s in ex.get("sets", []):
+                        w = float(s.get("weight_kg", 0) or 0)
+                        r = int(s.get("reps", 0) or 0)
+                        if w > 0 and r > 0:
+                            est = estimate_1rm(w, r)
+                            if est > max_e1rm:
+                                max_e1rm = est
+                    if max_e1rm > 0:
+                        appearances.append({"date": row["date"], "e1rm": max_e1rm})
+        except Exception:
+            pass
+
+    if len(appearances) < window:
+        return {"exercise": exercise_name, "plateau": False, "reason": "insufficient_history"}
+
+    recent = appearances[-window:]
+    starting_e1rm = recent[0]["e1rm"]
+    ending_e1rm = recent[-1]["e1rm"]
+    
+    improvement_pct = ((ending_e1rm - starting_e1rm) / starting_e1rm) * 100
+    
+    is_plateau = improvement_pct < 1.0 # Less than 1% progress over the window
+    
+    return {
+        "exercise": exercise_name,
+        "plateau": is_plateau,
+        "improvement_pct": round(improvement_pct, 2),
+        "history": [a["e1rm"] for a in recent]
+    }

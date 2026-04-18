@@ -5,7 +5,8 @@
 [![Python 3.13](https://img.shields.io/badge/python-3.13-blue.svg)](https://python.org)
 [![LangGraph](https://img.shields.io/badge/orchestration-LangGraph-green)](https://github.com/langchain-ai/langgraph)
 [![Ollama](https://img.shields.io/badge/LLM-Ollama%20%7C%20Qwen2.5-orange)](https://ollama.com)
-[![Streamlit](https://img.shields.io/badge/UI-Streamlit-red)](https://streamlit.io)
+[![FastAPI](https://img.shields.io/badge/Backend-FastAPI-009688)](https://fastapi.tiangolo.com)
+[![Next.js](https://img.shields.io/badge/Frontend-Next.js-black)](https://nextjs.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 ---
@@ -25,33 +26,26 @@ Every answer is backed by numbers computed from your own data. The LLM narrates;
 ## Architecture
 
 ```
-User Query
-    │
-    ▼
-Input Guardrail (keyword + LLM classifier)
-    │
-    ▼
-LangGraph Router (classifies intent)
-    │
-    ├──► Readiness Agent (sleep · HRV · resting HR)
-    ├──► Progress Agent (ACWR · volume · exercise history)
-    └──► Coach Agent    (synthesises both streams)
-              │
-              ▼
-         Tool Calls → Analysis Layer (pure Python algorithms)
-                              │
-                         API Clients (Strava · Fitbit)
-                              │
-                         diskcache (1h TTL)
-    │
-    ▼
-Output Guardrail (number cross-check)
-    │
-    ▼
-Memory Manager (save turn · summarise · extract facts)
-    │
-    ▼
-Response → Streamlit UI
+┌─────────────────────────────────────────────────────────┐
+│  Next.js Frontend (localhost:3000)                       │
+│  Dashboard · AI Coach · History · Settings               │
+└──────────────────────┬──────────────────────────────────┘
+                       │ REST API
+┌──────────────────────▼──────────────────────────────────┐
+│  FastAPI Backend (localhost:8000)                        │
+│  /api/workouts · /api/chat · /api/sync · /api/tokens    │
+├─────────────────────────────────────────────────────────┤
+│  LangGraph Router (classifies intent)                   │
+│   ├──► Readiness Agent (sleep · HRV · resting HR)       │
+│   ├──► Progress Agent  (ACWR · volume · history)        │
+│   └──► Coach Agent     (synthesises both streams)       │
+│              │                                          │
+│         Tool Calls → Analysis Layer (pure Python)       │
+│              │                                          │
+│         API Clients (Strava · Fitbit) + diskcache       │
+├─────────────────────────────────────────────────────────┤
+│  Token Vault (SQLite) · Memory Manager · Guardrails     │
+└─────────────────────────────────────────────────────────┘
 ```
 
 **Core design principles:**
@@ -66,14 +60,15 @@ Response → Streamlit UI
 
 | Concern | Library |
 |---|---|
+| Backend | `fastapi` + `uvicorn` — REST API, background tasks |
+| Frontend | `next.js` + `framer-motion` — responsive SPA with animations |
 | LLM | `ollama` + `langchain-ollama` (Qwen3.5:4b, local) |
 | Orchestration | `langgraph` — stateful agent graphs |
 | API caching | `diskcache` — persistent, TTL-aware |
 | API retries | `tenacity` — exponential backoff |
 | Data | `pandas` |
 | Validation | `pydantic` |
-| UI | `streamlit` 1.41.1 — multipage, caching, AppTest |
-| DB | `sqlite3` — chat history, semantic memory, workout indexing |
+| DB | `sqlite3` — chat history, semantic memory, workout indexing, **token vault** |
 | Testing | `pytest` 9.0.2 + `langsmith` instrumentation |
 
 ---
@@ -104,6 +99,7 @@ Response → Streamlit UI
 ### Prerequisites
 
 - Python 3.13
+- Node.js 18+ (for the frontend)
 - [Ollama](https://ollama.com/) installed and running
 - Strava API credentials
 - Fitbit API credentials (Personal app type for HRV access)
@@ -118,17 +114,20 @@ scripts\SETUP.bat
 py -3.13 -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
+
+# Frontend setup
+cd frontend && npm install && cd ..
 ```
 
 ### 2. Configure API credentials
 
-Run the interactive token setup script — it walks you through Strava and Fitbit OAuth, then writes all tokens directly to `.env`:
+Run the Python token setup utility. It opens your browser for OAuth and saves tokens directly to the **SQLite database vault**:
 
-```powershell
-.\scripts\GET_TOKENS.ps1
+```bash
+python scripts/setup_tokens.py
 ```
 
-This opens your browser for each service's OAuth flow and saves your tokens automatically. See [`scripts/README.md`](scripts/README.md) for full details.
+Alternatively, for advanced troubleshooting: `.\scripts\setup_tokens.py` automatically captures redirects.
 
 ### 3. Start Ollama
 
@@ -140,8 +139,14 @@ ollama serve
 ### 4. Run the app
 
 ```bash
-streamlit run app.py
+# Terminal 1 — Backend (FastAPI)
+python main.py
+
+# Terminal 2 — Frontend (Next.js)
+cd frontend && npm run dev
 ```
+
+Backend: http://localhost:8000 · Frontend: http://localhost:3000
 
 ### 5. Run the test suite
 
@@ -153,8 +158,21 @@ python scripts/run_tests.py
 pytest
 
 # Run a specific phase
-pytest tests/phase-tests/test_phase08_ui_dashboard.py -v
+pytest tests/phase-tests/test_phase04_analysis.py -v
 ```
+
+---
+
+## Documentation
+
+For deep dives into the system, see the modular guides in the `docs/` directory:
+
+- [**System Architecture**](docs/architecture.md) — Multiagent design, data flow, and memory system.
+- [**Setup Guide**](docs/setup.md) — Prerequisites, API configuration, and token acquisition.
+- [**Running the App**](docs/running.md) — How to start the FastAPI backend and Next.js frontend.
+- [**Testing Guide**](docs/testing.md) — Phase-based testing, AppTest framework, and instrumentation.
+- [**API & Module Reference**](docs/api_reference.md) — Algorithms, sync engine details, and schema definitions.
+
 
 ---
 
@@ -180,78 +198,66 @@ Hevy exports workout data into the Strava activity **description** field as plai
 
 ```
 fitness-bridge/
-├── app.py                  # Streamlit entrypoint
+├── main.py                 # FastAPI backend entrypoint
 ├── config.py               # All constants and env loading
-├── pytest.ini              # pytest config (testpaths = tests)
 ├── requirements.txt
 ├── AGENTS.md               # AI agent instructions
-├── README.md
+├── frontend/               # Next.js frontend (monorepo)
+│   ├── app/
+│   │   ├── layout.js       # Root layout with sidebar nav
+│   │   ├── page.js         # Dashboard (animated, Framer Motion)
+│   │   ├── globals.css     # Design system (dark mode)
+│   │   ├── coach/page.js   # AI Coach page
+│   │   ├── history/page.js # History page
+│   │   └── settings/page.js# Settings page
+│   └── package.json
 ├── scripts/
-│   ├── README.md           # Script usage guide
-│   ├── SETUP.bat           # One-click environment setup
-│   ├── GET_TOKENS.ps1      # First-time Strava + Fitbit OAuth
-│   ├── REFRESH_STRAVA.ps1  # Re-authorize Strava
-│   ├── REFRESH_FITBIT.ps1  # Re-authorize Fitbit
+│   ├── setup_tokens.py     # Python OAuth setup → saves to DB vault
 │   ├── run_tests.py        # Phase-ordered test runner
-│   ├── check_app_log.py    # Logger smoke test
-│   └── test_log.py         # Logger path checker
+│   └── clear_chats.py      # Database cleanup utility
 ├── src/
-│   ├── clients/            # Strava + Fitbit API wrappers
+│   ├── clients/            # Strava + Fitbit API wrappers (DB-backed tokens)
 │   ├── parsers/            # Hevy plaintext → structured data
 │   ├── analysis/           # Pure Python scoring + strength analytics
-│   │   ├── strength.py     # 1RM estimation, PR detection, muscle volume
-│   │   ├── load.py         # ACWR, deload detection, overreach
-│   │   ├── readiness.py    # Readiness scoring
-│   │   └── dataset.py      # Multi-source dataset builder
 │   ├── memory/             # Three-tier memory system
 │   ├── guardrails/         # Input + output validation
 │   ├── agents/             # LangGraph router + specialists
 │   ├── sync/               # Multi-source sync engine (Strava + Fitbit)
-│   └── utils/              # Database, cache, logging, tokens
-├── ui/
-│   ├── chat.py             # Message rendering + streaming + auto-titling
-│   ├── dashboard.py        # Training metrics, heatmap, charts
-│   ├── shared.py           # Reusable helpers (format_set, sync)
-│   ├── styles.py           # Custom CSS injection
-│   └── pages/
-│       ├── coach.py        # AI coach + session management
-│       ├── history.py      # Workout browser + multi-source filters
-│       ├── settings.py     # Credentials, sync controls, token expiry, facts
-│       └── diagnostics.py  # Router metrics, sync health, API quota
+│   └── utils/              # Database, cache, logging, formatting
 ├── tests/
 │   ├── conftest.py         # Fixtures + DB isolation
-│   └── phase-tests/        # Phase00–08 pytest suites
+│   └── phase-tests/        # Phase00–07 pytest suites
 └── docs/
     ├── RULES.md            # Developer coding rules
-    └── technical_reference.md
+    ├── architecture.md     # NEW: System design
+    ├── setup.md            # NEW: Installation & API config
+    ├── running.md          # NEW: Start instructions
+    ├── testing.md          # NEW: Test guide
+    └── api_reference.md    # NEW: Module documentation
 ```
 
 ---
 
 ## UI Architecture
 
-### Multipage Navigation
+### Next.js Frontend (Primary)
 
-**app.py** wires five pages with shared session state and background sync:
+**`main.py`** (FastAPI) serves the backend; **`frontend/`** (Next.js) provides the responsive UI:
 
 | Page | Purpose | Key Features |
 |---|---|---|
-| **Dashboard** | Training overview | ⚡ Readiness, 🏋️ Volume, 📊 ACWR, 🗓️ Sessions; time range toggle (7d/14d/30d/90d); calendar heatmap; HR zone + calorie + muscle volume charts |
-| **Coach** | AI chat agent | Session picker, streaming responses, message history; rename (✏️) and delete (🗑️) sessions; dynamic auto-titling; routing visibility |
-| **History** | Workout browser | Date/title/volume filters, source filter (Strava/Fitbit), muscle-group selector, pagination; source badges (🟠/🔵) |
-| **Settings** | Credentials & controls | Manual sync, cache clear, connection status pills; 🔑 Token Expiry panel (live time-to-expiry with green/amber/red status); semantic fact management (view/edit/delete) |
-| **Diagnostics** | Observability | Router metrics, Strava API quota usage, sync health for Strava + Fitbit activities |
+| **Dashboard** | Training overview | Animated stat cards, workout table, sync button; Framer Motion staggered animations; token status badges |
+| **Coach** | AI chat agent | (In progress) Streaming chat interface |
+| **History** | Workout browser | (In progress) Filterable workout list |
+| **Settings** | Credentials & controls | Token vault status, API connection management |
 
 ### Visual Design Principles
 
-- **Custom CSS** injected via `ui/styles.py` — chat bubbles, metric card gradients, status pills, source badges
-- **Bordered containers** for metric cards (`st.container(border=True)`) with gradient backgrounds
-- **Icons + colour coding** for readiness zones (green=ready, yellow=caution, red=overtrained)
-- **Two-column splits** for space efficiency (e.g., last workout: left=exercises, right=summary)
-- **Source badges** — 🟠 Strava / 🔵 Fitbit on workouts in History and Dashboard
-- **Status pills** in sidebar (styled with CSS instead of emoji dots)
-- **Expanders** for collapsible details (workouts, settings)
-- **Server-side filtering** for performance (SQL WHERE clauses); client-side for JSON columns
+- **Dark mode design system** with CSS custom properties (`globals.css`)
+- **Framer Motion** for spring animations, staggered reveals, hover effects, and micro-interactions
+- **Responsive grid layout** with fixed sidebar navigation
+- **Source badges** — colour-coded Strava / Fitbit tags on workout rows
+- **Server-side filtering** via FastAPI endpoints; client-side for JSON columns
 
 ### Database Filtering
 
@@ -299,16 +305,13 @@ def get_workouts_filtered(
 
 ## Token Management
 
-Tokens are managed at three levels:
+Tokens are stored in a **SQLite database vault** (`api_tokens` table) instead of `.env` files. This solves the "rotating token" problem documented in `docs/learnings/fitbit_api.md` — tokens survive process restarts and are atomically updated.
 
 | Level | What it does |
 |---|---|
-| **`scripts/GET_TOKENS.ps1`** | First-time OAuth setup for both Strava and Fitbit |
-| **`scripts/REFRESH_STRAVA.ps1`** | Re-authorize Strava when persistent 401s appear |
-| **`scripts/REFRESH_FITBIT.ps1`** | Re-authorize Fitbit when persistent 401s appear |
-| **App auto-refresh** | `StravaClient` and `FitbitClient` check expiry on every request and silently refresh using the stored refresh token |
-| **`src/utils/token_writer.py`** | Writes refreshed tokens to both `.env` (persistence) and `os.environ` (live in-process use) |
-| **Settings → 🔑 Token Expiry** | Live UI panel showing exact expiry time for both access tokens with colour-coded alerts |
+| **`scripts/setup_tokens.py`** | Python OAuth setup — saves tokens directly to DB vault |
+| **App auto-refresh** | `StravaClient` and `FitbitClient` check expiry on every request, refresh using the vault, and immediately persist new tokens |
+| **`GET /api/tokens/status`** | API endpoint showing vault token presence per provider |
 
 See [`scripts/README.md`](scripts/README.md) for when and why to run each script.
 
@@ -328,7 +331,6 @@ See [`scripts/README.md`](scripts/README.md) for when and why to run each script
 | **05** | Sync engine + memory system | 5 tests |
 | **06** | Guardrails (input/output validation) | 3 tests |
 | **07** | LangGraph agents (router + tools) | 5 tests |
-| **08** | UI pages (Streamlit AppTest) | 14 tests |
 
 *Phase 02 requires live credentials; see `test_phase02_clients_and_tokens.py` for manual flow.
 
@@ -376,14 +378,17 @@ All fixtures ensure test isolation; no test pollution across runs.
 
 ## Future Roadmap
 
-- In-app OAuth re-authorization flow (currently via `scripts/REFRESH_*.ps1`)
+- Full AI Coach chat interface in Next.js
+- Complete History page with advanced filtering
+- In-app OAuth re-authorization flow
 - Vector search over session history for semantic queries
 - Nutrition integration (MyFitnessPal / Cronometer)
 - Training plan generator
 - Exercise substitution engine
 - Weekly digest / notification system
-- Dark/light theme toggle
-- Android port — Flutter frontend + FastAPI backend + Gemini Nano
+- Light theme toggle
+- Android port — React Native + FastAPI backend + Gemini Nano
+- Upstash Redis for serverless deployment
 
 ---
 

@@ -8,11 +8,12 @@ from src.agents.llm import get_llm
 from src.agents.state import AgentState
 from src.agents.readiness_agent import readiness_agent_node
 from src.agents.progress_agent import progress_agent_node
-from src.agents.coach_agent import coach_agent_node
+from src.agents.coach_agent import coach_agent_node, analyst_agent_node
 
 from src.agents.tools.readiness_tools import readiness_tools
 from src.agents.tools.progress_tools import progress_tools
 from src.agents.tools.coach_tools import coach_tools
+from src.agents.tools.analytics_tools import analytics_tools
 
 llm = get_llm(temperature=0.0)
 MAX_TOOL_LOOPS = max(1, int(os.getenv("AGENT_MAX_TOOL_LOOPS", "5")))
@@ -51,6 +52,7 @@ _COACH_HINTS = {
     "increase", "reduce", "change",
 }
 _GENERAL_HINTS = {"hello", "hi", "hey", "thanks", "thank you"}
+_ANALYST_HINTS = {"pattern", "insight", "correlation", "discovery", "why", "plateau", "z-score", "long-term", "auditor"}
 
 ROUTER_PROMPT = """
 You are a routing classifier for a fitness coaching app.
@@ -58,6 +60,7 @@ Classify the user's intent into exactly one category:
 
 - readiness: questions about today's recovery, sleep quality, whether to train
 - progress: questions about past workouts, volume trends, exercise history
+- analyst: pattern discovery, why performance changed, plateau audits, deep insights
 - coach: requests for coaching advice, what to change, how to improve
 - general: greetings, clarifications, anything else
 
@@ -87,6 +90,7 @@ def router_node(state: AgentState):
     _agent_map = {
         "readiness": "Readiness Specialist",
         "progress": "Progress Analyst",
+        "analyst": "Discovery Analyst",
         "coach": "Coach",
         "general": "Coach",
     }
@@ -107,11 +111,13 @@ def _heuristic_intent(query: str):
 
     readiness_hits = sum(1 for hint in _READINESS_HINTS if hint in text)
     progress_hits = sum(1 for hint in _PROGRESS_HINTS if hint in text)
+    analyst_hits = sum(1 for hint in _ANALYST_HINTS if hint in text)
     coach_hits = sum(1 for hint in _COACH_HINTS if hint in text)
 
     scores = {
         "readiness": readiness_hits,
         "progress": progress_hits,
+        "analyst": analyst_hits,
         "coach": coach_hits,
     }
     top_intent = max(scores, key=scores.get)
@@ -131,6 +137,7 @@ def route_to_agent(state: AgentState):
     mapping = {
         "readiness": "readiness_agent",
         "progress":  "progress_agent",
+        "analyst":   "analyst_agent",
         "coach":     "coach_agent",
         "general":   "coach_agent" 
     }
@@ -154,6 +161,7 @@ def route_after_tools(state: AgentState):
     mapping = {
         "readiness": "readiness_agent",
         "progress":  "progress_agent",
+        "analyst":   "analyst_agent",
         "coach":     "coach_agent",
         "general":   "coach_agent"
     }
@@ -188,12 +196,13 @@ class InterceptingToolNode(ToolNode):
 def build_graph():
     graph = StateGraph(AgentState)
 
-    all_tools = readiness_tools + progress_tools + coach_tools
+    all_tools = readiness_tools + progress_tools + coach_tools + analytics_tools
 
     graph.add_node("router", router_node)
     graph.add_node("readiness_agent", readiness_agent_node)
     graph.add_node("progress_agent", progress_agent_node)
     graph.add_node("coach_agent", coach_agent_node)
+    graph.add_node("analyst_agent", analyst_agent_node)
     graph.add_node("tools", InterceptingToolNode(all_tools))
 
     graph.set_entry_point("router")
@@ -201,10 +210,11 @@ def build_graph():
     graph.add_conditional_edges("router", route_to_agent, {
         "readiness_agent": "readiness_agent",
         "progress_agent":  "progress_agent",
-        "coach_agent":     "coach_agent"
+        "coach_agent":     "coach_agent",
+        "analyst_agent":   "analyst_agent"
     })
 
-    for agent in ["readiness_agent", "progress_agent", "coach_agent"]:
+    for agent in ["readiness_agent", "progress_agent", "coach_agent", "analyst_agent"]:
         graph.add_conditional_edges(agent, route_tools, {
             "tools": "tools",
             END: END
@@ -214,6 +224,7 @@ def build_graph():
         "readiness_agent": "readiness_agent",
         "progress_agent":  "progress_agent",
         "coach_agent":     "coach_agent",
+        "analyst_agent":   "analyst_agent",
         END: END,
     })
 

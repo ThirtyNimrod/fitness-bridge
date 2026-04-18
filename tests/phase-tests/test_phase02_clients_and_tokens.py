@@ -74,7 +74,15 @@ class TestTokenWriter:
 class TestAPIClients:
     def test_strava_client_refreshes_when_missing_token(self):
         """Missing token should trigger refresh during client initialization."""
-        with patch("src.clients.strava_client.STRAVA_ACCESS_TOKEN", None), \
+        # Must also clear the OS env vars since _get_runtime_value checks os.getenv() first,
+        # which would find a real token from the loaded .env and bypass the module-level patch.
+        env_overrides = {
+            "STRAVA_ACCESS_TOKEN": "",
+            "STRAVA_TOKEN_EXPIRES_AT": "",
+            "STRAVA_REFRESH_TOKEN": "",
+        }
+        with patch.dict(os.environ, env_overrides, clear=False), \
+             patch("src.clients.strava_client.STRAVA_ACCESS_TOKEN", None), \
              patch("src.clients.strava_client.STRAVA_TOKEN_EXPIRES_AT", None), \
              patch.object(StravaClient, "_refresh_access_token") as mock_refresh:
             StravaClient()

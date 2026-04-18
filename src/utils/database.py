@@ -244,6 +244,17 @@ def init_db():
             )
         ''')
 
+        # API Tokens table (the Vault)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS api_tokens (
+                provider      TEXT PRIMARY KEY,
+                access_token  TEXT,
+                refresh_token TEXT,
+                expires_at    INTEGER,
+                updated_at    DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+
         _run_migrations(conn)
 
         # Workout indexes — created after migrations so the source column exists
@@ -537,4 +548,35 @@ def set_last_synced(source: str, synced_at: datetime | None = None):
                 VALUES (?, ?)
                 ON CONFLICT(source) DO UPDATE SET last_synced_at=excluded.last_synced_at
             """, (source, synced_at_str))
+        conn.commit()
+
+
+# ── API Token Vault helpers ───────────────────────────────────────────────────
+
+def get_api_token(provider: str) -> dict | None:
+    """Retrieve token data for a provider (fitbit, strava, spotify)."""
+    with get_connection() as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT access_token, refresh_token, expires_at FROM api_tokens WHERE provider = ?",
+            (provider.lower(),)
+        )
+        row = cursor.fetchone()
+    return dict(row) if row else None
+
+
+def upsert_api_token(provider: str, access_token: str, refresh_token: str, expires_at: int | None):
+    """Save or update tokens for a provider."""
+    # We use a transaction because this is a critical 'Vault' write
+    with get_connection() as conn:
+        conn.execute('''
+            INSERT INTO api_tokens (provider, access_token, refresh_token, expires_at, updated_at)
+            VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(provider) DO UPDATE SET
+                access_token=excluded.access_token,
+                refresh_token=excluded.refresh_token,
+                expires_at=excluded.expires_at,
+                updated_at=CURRENT_TIMESTAMP
+        ''', (provider.lower(), access_token, refresh_token, expires_at))
         conn.commit()

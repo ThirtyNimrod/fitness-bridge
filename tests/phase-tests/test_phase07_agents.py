@@ -221,83 +221,9 @@ class TestRoutingMetrics:
         m1["total_routed"] = 999
         m2 = get_routing_metrics()
         assert m2["total_routed"] == 0  # original dict unchanged
+# TestChatStreaming removed (legacy UI only)
 
 
-class TestChatStreaming:
-    def test_stream_agent_streams_tokens_and_uses_values_snapshot(self):
-        import ui.chat as chat_module
-
-        placeholder = MagicMock()
-        manager_mock = MagicMock()
-        manager_mock.build_context.return_value = {
-            "recent_messages": [],
-            "system_context": "ctx",
-        }
-
-        # Simulate mixed stream events from LangGraph multi-mode streaming.
-        streamed_events = [
-            (
-                "messages",
-                (AIMessageChunk(content="Hello"), {"langgraph_node": "coach_agent"}),
-            ),
-            (
-                "messages",
-                (AIMessageChunk(content=" world"), {"langgraph_node": "coach_agent"}),
-            ),
-            (
-                "values",
-                {
-                    "messages": [AIMessage(content="Hello world")],
-                    "tool_data": {"score": 42},
-                },
-            ),
-        ]
-
-        graph_mock = MagicMock()
-        graph_mock.stream.return_value = iter(streamed_events)
-
-        with patch.object(chat_module, "manager", manager_mock), \
-             patch.object(chat_module, "compiled_graph", graph_mock), \
-             patch.object(chat_module.input_guardrail, "check", return_value=(True, "ok")), \
-             patch.object(chat_module.output_guardrail, "validate_response", return_value=(True, "")):
-            response = chat_module.stream_agent("Plan my week", "s1", placeholder)
-
-        assert response == "Hello world"
-        assert placeholder.markdown.call_count >= 2
-        graph_mock.invoke.assert_not_called()
-        manager_mock.save_turn.assert_called_once_with("s1", "Plan my week", "Hello world")
-
-    def test_stream_agent_falls_back_to_invoke_when_values_missing(self):
-        import ui.chat as chat_module
-
-        placeholder = MagicMock()
-        manager_mock = MagicMock()
-        manager_mock.build_context.return_value = {
-            "recent_messages": [],
-            "system_context": "ctx",
-        }
-
-        graph_mock = MagicMock()
-        graph_mock.stream.return_value = iter([
-            (
-                "messages",
-                (AIMessageChunk(content="No snapshot"), {"langgraph_node": "coach_agent"}),
-            )
-        ])
-        graph_mock.invoke.return_value = {
-            "messages": [AIMessage(content="Fallback final")],
-            "tool_data": {"k": "v"},
-        }
-
-        with patch.object(chat_module, "manager", manager_mock), \
-             patch.object(chat_module, "compiled_graph", graph_mock), \
-             patch.object(chat_module.input_guardrail, "check", return_value=(True, "ok")), \
-             patch.object(chat_module.output_guardrail, "validate_response", return_value=(True, "")):
-            response = chat_module.stream_agent("Plan", "s2", placeholder)
-
-        assert response == "No snapshot"
-        graph_mock.invoke.assert_called_once()
-        manager_mock.save_turn.assert_called_once_with("s2", "Plan", "No snapshot")
 
 
 class TestDeterministicIntegration:

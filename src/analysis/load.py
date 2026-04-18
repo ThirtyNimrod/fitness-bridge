@@ -116,6 +116,45 @@ def compute_acwr(sessions_df):
         "zone": classify_acwr_zone(ratio)
     }
 
+def compute_fatigue_index(sessions_df: pd.DataFrame) -> dict:
+    """Compare recent 7-day volume to 28-day volume.
+    
+    A fatigue index > 1.2 suggests high recent accumulation relative to history.
+    """
+    if sessions_df.empty:
+        return {"fatigue_index": 0.0, "status": "no_data"}
+        
+    df = _prepare_sessions_df(sessions_df)
+    today = date.today()
+    
+    # 7-day volume
+    acute_start = today - timedelta(days=6)
+    acute_vol = df[(df['date_obj'] >= acute_start) & (df['date_obj'] <= today)]['total_volume_kg'].sum()
+    
+    # 28-day volume
+    chronic_start = today - timedelta(days=27)
+    chronic_vol_total = df[(df['date_obj'] >= chronic_start) & (df['date_obj'] <= today)]['total_volume_kg'].sum()
+    
+    # Normalized chronic (avg weekly over 28 days)
+    chronic_weekly_avg = chronic_vol_total / 4.0
+    
+    if chronic_weekly_avg == 0:
+        return {"fatigue_index": 0.0, "status": "insufficient_history"}
+        
+    index = round(float(acute_vol / chronic_weekly_avg), 2)
+    
+    status = "normal"
+    if index > 1.5: status = "high_fatigue"
+    elif index > 1.2: status = "elevated_fatigue"
+    elif index < 0.7: status = "undertrained"
+    
+    return {
+        "fatigue_index": index,
+        "status": status,
+        "acute_volume": round(float(acute_vol), 1),
+        "chronic_weekly_avg": round(float(chronic_weekly_avg), 1)
+    }
+
 def detect_overreach(sessions_df):
     acwr = compute_acwr(sessions_df)
     if acwr is None: 

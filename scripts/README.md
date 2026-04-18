@@ -9,12 +9,12 @@ Helper scripts for setting up and maintaining the Fitness Bridge AI application.
 | Script | When to run |
 |---|---|
 | [`SETUP.bat`](#setupbat) | **Once** — first-time Python environment setup |
-| [`GET_TOKENS.ps1`](#get_tokensps1) | **Once** — first-time API credential setup (both services) |
+| [`setup_tokens.py`](#setup_tokenspy) | **Once** — first-time API credential setup (saves to DB vault) |
+| [`GET_TOKENS.ps1`](#get_tokensps1) | **Once** — legacy PowerShell OAuth setup (writes to `.env`) |
 | [`REFRESH_STRAVA.ps1`](#refresh_stravaps1) | **As needed** — re-authorize Strava when tokens break |
 | [`REFRESH_FITBIT.ps1`](#refresh_fitbitps1) | **As needed** — re-authorize Fitbit when tokens break |
 | [`run_tests.py`](#run_testspy) | **Dev** — run all phase tests in order |
-| [`check_app_log.py`](#check_app_logpy--test_logpy) | **Dev** — verify logger is working |
-| [`test_log.py`](#check_app_logpy--test_logpy) | **Dev** — print the active log directory path |
+| [`clear_chats.py`](#clear_chatspy) | **Dev** — clear chat history from the database |
 
 ---
 
@@ -30,21 +30,34 @@ scripts\SETUP.bat
 
 ---
 
-## GET_TOKENS.ps1
+## setup_tokens.py
 
-**Run once after SETUP.bat** to obtain your initial API tokens for both Strava and Fitbit.
+**Recommended.** Run once after SETUP.bat to obtain your initial API tokens for Strava, Fitbit, and Spotify.
 
-Guides you step-by-step through:
-1. Entering your Strava Client ID + Secret → opens browser for OAuth → saves `STRAVA_REFRESH_TOKEN`
-2. Entering your Fitbit Client ID + Secret → opens browser for OAuth → saves `FITBIT_ACCESS_TOKEN` + `FITBIT_REFRESH_TOKEN`
+This Python script:
+1. Opens your browser for each provider's OAuth flow
+2. Runs a local callback server to capture the authorization code automatically
+3. Saves all tokens directly to the **SQLite database vault** (`api_tokens` table)
+
+```bash
+python scripts/setup_tokens.py
+```
+
+No copy-pasting URLs required — the redirect is captured for you.
+
+---
+
+## GET_TOKENS.ps1 (Legacy)
+
+**Alternative to `setup_tokens.py`.** PowerShell-native OAuth setup that writes tokens to `.env` instead of the database.
+
+Use this only if you prefer PowerShell or encounter issues with the Python utility.
 
 ```powershell
 .\scripts\GET_TOKENS.ps1
 ```
 
-After it completes, it prints the exact expiry times for your access tokens and tells you when you'd need to re-authorize.
-
-> **Note:** You should not need to run this again unless you want to start completely fresh. For day-to-day token issues, use the individual `REFRESH_*.ps1` scripts below.
+> **Note:** Tokens written to `.env` by this script will be picked up by the app as a fallback if the database vault is empty.
 
 ---
 
@@ -116,9 +129,10 @@ After it completes, it prints the exact expiry times for your access tokens and 
 The app manages tokens automatically while it's running:
 
 ```
-App starts
-  └─► StravaClient / FitbitClient check token expiry
-        └─► If expired → call refresh endpoint → write new tokens to .env + os.environ
+App starts (python main.py)
+  └─► StravaClient / FitbitClient load tokens from DB vault
+       └─► (Falls back to .env if vault is empty)
+        └─► If expired → call refresh endpoint → save new tokens to DB vault
               └─► Subsequent requests use the new access token
 ```
 
@@ -126,7 +140,7 @@ You only need to run a refresh script when:
 - The **refresh token** itself is invalid (revoked, expired, or from a broken initial auth)
 - You see `401` errors in the logs **after** the app has already attempted a token refresh
 
-The **Settings → 🔑 Token Expiry** section in the UI shows live expiry status for both services.
+The `/api/tokens/status` endpoint shows the vault status for all providers.
 
 ---
 
@@ -159,13 +173,13 @@ Useful when debugging logging issues (missing log files, wrong directory, etc.).
 ## Troubleshooting
 
 ### "The auth code has expired"
-Authorization codes from both Strava and Fitbit are **very short-lived** (30 seconds for Strava, ~10 minutes for Fitbit). Once the browser redirects, copy the code from the URL immediately and paste it before doing anything else.
+Authorization codes from both Strava and Fitbit are **very short-lived** (30 seconds for Strava, ~10 minutes for Fitbit). The `setup_tokens.py` script captures them automatically via a local server, but if using the PowerShell scripts, paste the code immediately.
 
 ### "Python exchange failed" (Strava)
-Make sure the `.venv` has been set up (`SETUP.bat`) before running the token script. The Strava script uses the venv Python to avoid TLS issues with PowerShell's `Invoke-WebRequest`.
+Make sure the `.venv` has been set up (`SETUP.bat`) before running the token script.
 
 ### Fitbit redirect URI mismatch
-The redirect URI must be **exactly** `http://localhost:8501/` (with trailing slash) in your [Fitbit app settings](https://dev.fitbit.com/apps). If it doesn't match, the OAuth flow will fail.
+The redirect URI must match your [Fitbit app settings](https://dev.fitbit.com/apps). `setup_tokens.py` uses `http://127.0.0.1:8000/callback`.
 
 ### Still getting 401 after running the script?
-Restart the Streamlit app completely (`Ctrl+C` then `streamlit run app.py`). The updated tokens in `.env` are loaded at startup and kept live in `os.environ` during the run.
+Restart the FastAPI backend (`Ctrl+C` then `python main.py`). Check the database vault with `sqlite3 data/fitness_bridge.db "SELECT provider, CASE WHEN refresh_token IS NOT NULL THEN 'present' ELSE 'missing' END FROM api_tokens;"`

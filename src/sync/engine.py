@@ -183,7 +183,23 @@ class SyncEngine:
                 if not force and last_synced and activity_dt <= last_synced:
                     continue
 
-                record = build_fitbit_session_record(activity, ACTIVITY_TYPE_MAP)
+                # Fetch biometrics for the date of the Fitbit activity
+                date_str = start_time[:10]
+                app_logger.info(f"Sync: Fetching biometrics for Fitbit activity on {date_str}")
+                
+                sleep_data = safe_fetch(self.fitbit.get_sleep, date_str)
+                hrv_data   = safe_fetch(self.fitbit.get_hrv, date_str)
+                resting_hr = safe_fetch(self.fitbit.get_resting_hr, date_str)
+
+                app_logger.info(f"Sync: Fitbit metrics for {date_str} - Sleep: {bool(sleep_data)}, HRV: {bool(hrv_data)}, RHR: {resting_hr}")
+
+                readiness = compute_readiness(
+                    sleep_data or {},
+                    hrv_data   or {},
+                    resting_hr,
+                )
+
+                record = build_fitbit_session_record(activity, ACTIVITY_TYPE_MAP, readiness)
                 validated = validate_workout_record(record)
                 upsert_workout(validated)
                 synced += 1

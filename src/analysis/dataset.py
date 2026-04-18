@@ -41,7 +41,7 @@ def build_session_record(activity, exercises, readiness):
     }
 
 
-def build_fitbit_session_record(activity: dict, activity_type_map: dict) -> dict:
+def build_fitbit_session_record(activity: dict, activity_type_map: dict, readiness: dict | None = None) -> dict:
     """Build a workout record from a Fitbit activity log entry (Pixel Watch workouts)."""
     type_id = activity.get("activityTypeId", 0)
     start_time = activity.get("startTime", "")
@@ -56,6 +56,7 @@ def build_fitbit_session_record(activity: dict, activity_type_map: dict) -> dict
         distance_km = round(distance_raw, 2) if distance_raw else None
 
     hr_zones = activity.get("heartRateZones", [])
+    readiness = readiness or {}
 
     return {
         "activity_id": str(activity.get("logId", "")),
@@ -67,16 +68,16 @@ def build_fitbit_session_record(activity: dict, activity_type_map: dict) -> dict
         "total_volume_kg": 0,
         "exercise_count": 0,
         "set_count": 0,
-        "exercises_raw": "[]",
-        "muscle_groups": "[]",
+        "exercises_raw": None, # Null is better than literal "[]" for UI logic
+        "muscle_groups": None,
         "has_drop_sets": 0,
         "has_failure_sets": 0,
-        "sleep_hours": None,
-        "sleep_efficiency": None,
-        "hrv_ms": None,
-        "resting_hr": None,
-        "readiness_score": None,
-        "readiness_label": None,
+        "sleep_hours": readiness.get("sleep_hours"),
+        "sleep_efficiency": readiness.get("sleep_efficiency"),
+        "hrv_ms": readiness.get("hrv_ms"),
+        "resting_hr": readiness.get("resting_hr"),
+        "readiness_score": readiness.get("score"),
+        "readiness_label": readiness.get("label"),
         "calories": activity.get("calories", 0),
         "hr_zones": json.dumps(hr_zones) if hr_zones else None,
         "distance_km": distance_km,
