@@ -8,74 +8,73 @@ const containerVariants = {
   show: {
     opacity: 1,
     transition: {
-      staggerChildren: 0.1,
+      staggerChildren: 0.15,
     },
   },
 };
 
 const itemVariants = {
-  hidden: { opacity: 0, y: 10 },
-  show: { opacity: 1, y: 0, transition: { duration: 0.4, ease: "easeOut" } },
+  hidden: { opacity: 0, y: 20 },
+  show: { opacity: 1, y: 0, transition: { duration: 0.6, ease: [0.16, 1, 0.3, 1] } },
 };
 
-function LobbyCard({ title, description, href }) {
+function ActionModule({ title, description, href, delay = 0 }) {
   return (
-    <Link href={href} style={{ textDecoration: "none" }}>
-      <motion.div
-        className="card lobby-card"
+    <Link href={href} style={{ textDecoration: 'none' }}>
+      <motion.div 
+        className="action-module group"
         variants={itemVariants}
-        whileHover={{ borderColor: "var(--foreground)" }}
-        whileTap={{ scale: 0.99 }}
       >
-        <div>
-          <h3>{title}</h3>
-          <p className="text-muted" style={{ fontSize: "0.875rem" }}>{description}</p>
+        <div className="module-header">
+          <h3 className="module-title">{title}</h3>
+          <span className="module-arrow">→</span>
         </div>
-        <div className="arrow">→</div>
+        <p className="module-desc">{description}</p>
       </motion.div>
     </Link>
   );
 }
 
-export default function Lobby() {
+export default function Home() {
   return (
     <motion.div
       initial="hidden"
       animate="show"
       variants={containerVariants}
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        alignItems: "center",
-        justifyContent: "center",
-        textAlign: "center",
-        paddingTop: "2rem",
-      }}
     >
-      <motion.div variants={itemVariants} style={{ marginBottom: "4rem" }}>
-        <h1 className="title">Fitness Bridge</h1>
-        <p className="text-muted" style={{ fontSize: "1rem", maxWidth: "500px", margin: "0 auto" }}>
-          your personalized multi-agent model for fitness dashboard and conversation
-        </p>
-      </motion.div>
+      <section className="hero-section">
+        <motion.span className="eyebrow" variants={itemVariants}>
+          Current Status
+        </motion.span>
+        <motion.div variants={itemVariants} style={{ display: 'flex', alignItems: 'baseline', gap: '1rem' }}>
+          <h1 className="hero-metric">84</h1>
+          <span style={{ fontSize: '2rem', fontFamily: 'var(--font-display)', color: 'var(--muted-foreground)' }}>/ 100</span>
+        </motion.div>
+        <motion.h2 className="display-title" variants={itemVariants} style={{ fontSize: 'clamp(2rem, 5vw, 4rem)', marginTop: '1rem' }}>
+          Optimal Readiness
+        </motion.h2>
+        <motion.p className="text-muted" variants={itemVariants} style={{ maxWidth: '600px', fontSize: '1.25rem', marginTop: '1rem' }}>
+          Your central nervous system has fully recovered from yesterday's heavy load. Proceed with the planned hypertrophy protocol.
+        </motion.p>
+      </section>
 
-      <motion.div className="grid" style={{ maxWidth: "900px" }} variants={containerVariants}>
-        <LobbyCard
-          title="Dashboard"
-          description="View your latest performance metrics, readiness score, and recovery biometrics."
-          href="/dashboard"
+      <section className="module-grid">
+        <ActionModule 
+          title="Dashboard" 
+          description="Live biometrics, strain analysis, and recovery forecasting." 
+          href="/dashboard" 
         />
-        <LobbyCard
-          title="Coach"
-          description="Direct access to elite strength and conditioning agents for program optimization."
-          href="/coach"
+        <ActionModule 
+          title="Coach Intel" 
+          description="Direct dialogue with your specialized AI training models." 
+          href="/coach" 
         />
-        <LobbyCard
-          title="History"
-          description="Review your training progression and historical activity data in a minimal feed."
-          href="/history"
+        <ActionModule 
+          title="Log Archive" 
+          description="Unfiltered telemetry from your past performances." 
+          href="/history" 
         />
-      </motion.div>
+      </section>
     </motion.div>
   );
 }

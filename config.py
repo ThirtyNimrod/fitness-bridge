@@ -4,6 +4,10 @@ from dotenv import load_dotenv
 # Load environment variables from .env file
 load_dotenv()
 
+# Upstash Redis Config
+UPSTASH_REDIS_REST_URL = os.getenv("UPSTASH_REDIS_REST_URL")
+UPSTASH_REDIS_REST_TOKEN = os.getenv("UPSTASH_REDIS_REST_TOKEN")
+
 # Strava API Config
 STRAVA_ACCESS_TOKEN    = os.getenv("STRAVA_ACCESS_TOKEN")
 STRAVA_CLIENT_ID      = os.getenv("STRAVA_CLIENT_ID")

@@ -1,8 +1,19 @@
 import sqlite3
 import os
 import uuid
+import json
 from datetime import datetime, timezone
-from config import DB_PATH, SHORT_TERM_WINDOW
+from config import DB_PATH, SHORT_TERM_WINDOW, UPSTASH_REDIS_REST_URL, UPSTASH_REDIS_REST_TOKEN
+from src.utils.logger import app_logger
+
+def _get_redis_client():
+    if UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN:
+        try:
+            from upstash_redis import Redis
+            return Redis(url=UPSTASH_REDIS_REST_URL, token=UPSTASH_REDIS_REST_TOKEN)
+        except ImportError:
+            pass
+    return None
 
 SCHEMA_VERSION = 3
 DB_BUSY_TIMEOUT_MS = int(os.getenv("DB_BUSY_TIMEOUT_MS", "5000"))
@@ -555,6 +566,17 @@ def set_last_synced(source: str, synced_at: datetime | None = None):
 
 def get_api_token(provider: str) -> dict | None:
     """Retrieve token data for a provider (fitbit, strava, spotify)."""
+    redis = _get_redis_client()
+    if redis:
+        try:
+            data = redis.get(f"{provider.lower()}:tokens")
+            if data:
+                if isinstance(data, str):
+                    return json.loads(data)
+                return data
+        except Exception as e:
+            app_logger.error(f"Redis get error: {e}")
+
     with get_connection() as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
@@ -568,6 +590,18 @@ def get_api_token(provider: str) -> dict | None:
 
 def upsert_api_token(provider: str, access_token: str, refresh_token: str, expires_at: int | None):
     """Save or update tokens for a provider."""
+    redis = _get_redis_client()
+    if redis:
+        try:
+            token_data = {
+                "access_token": access_token,
+                "refresh_token": refresh_token,
+                "expires_at": expires_at
+            }
+            redis.set(f"{provider.lower()}:tokens", json.dumps(token_data))
+        except Exception as e:
+            app_logger.error(f"Redis set error: {e}")
+
     # We use a transaction because this is a critical 'Vault' write
     with get_connection() as conn:
         conn.execute('''
